@@ -51,6 +51,14 @@ beforeAll(async () => {
       "utf8",
     ),
   );
+  for (const file of ["0002_relationships.sql", "0003_administration.sql"]) {
+    await exec(
+      readFileSync(
+        new URL("../packages/database/migrations/" + file, import.meta.url),
+        "utf8",
+      ),
+    );
+  }
 }, 30000);
 afterAll(async () => {
   await pool?.end();
@@ -212,5 +220,375 @@ describe("real migration and identity RPCs", () => {
         )
       )[0]?.allowed,
     ).toBe(false);
+  });
+});
+async function ready() {
+  const id = await account();
+  await call("claim_username", [id, "u" + id.replaceAll("-", "").slice(0, 20)]);
+  await call("save_profile", [
+    id,
+    JSON.stringify({
+      display_name: "Test",
+      gender: "woman",
+      interested_in: ["woman"],
+      city: "Tashkent",
+      intent: "serious_relationship",
+      bio: "Hello",
+    }),
+    ["travel", "music", "movies", "coffee", "architecture"],
+  ]);
+  const ph = await call("photo_begin", [id, null, randomUUID()]);
+  await call("reserve_photo_quota", [ph, 950]);
+  await call("photo_finish", [id, ph, "SAFE", `${id}/${ph}.jpg`]);
+  return { id, ph };
+}
+describe("relationship safety transactions", () => {
+  it("keeps unapproved profiles out of discovery", async () => {
+    const a = await ready();
+    const b = await account();
+    await call("claim_username", [b, "hiddenpending"]);
+    expect(await call("discover", [a.id, false, "hiddenpending"])).toBe(null);
+  });
+  it("keeps old primary on rejection and atomically replaces on approval", async () => {
+    const a = await ready();
+    const bad = await call("photo_begin", [a.id, a.ph, "bad"]);
+    await call("reserve_photo_quota", [bad, 950]);
+    await call("photo_finish", [a.id, bad, "UNSAFE", null]);
+    expect(
+      (
+        await q("select id from photos where user_id=$1 and primary_photo", [
+          a.id,
+        ])
+      )[0]?.id,
+    ).toBe(a.ph);
+    const good = await call("photo_begin", [a.id, a.ph, "good"]);
+    await call("reserve_photo_quota", [good, 950]);
+    expect(
+      await call("photo_finish", [a.id, good, "SAFE", `${a.id}/${good}.jpg`]),
+    ).toBe(true);
+    expect(
+      (
+        await q("select id from photos where user_id=$1 and primary_photo", [
+          a.id,
+        ])
+      )[0]?.id,
+    ).toBe(good);
+  });
+  it("creates exactly one mutual match under duplicate and concurrent likes", async () => {
+    const a = await ready(),
+      b = await ready();
+    await Promise.all([
+      call("social_action", [a.id, "like", b.id, "", "a", "{}"]),
+      call("social_action", [b.id, "like", a.id, "", "b", "{}"]),
+      call("social_action", [a.id, "like", b.id, "", "c", "{}"]),
+    ]);
+    expect(
+      (
+        await q(
+          "select count(*)::int n from matches where user_a=least($1::uuid,$2::uuid) and user_b=greatest($1::uuid,$2::uuid)",
+          [a.id, b.id],
+        )
+      )[0]?.n,
+    ).toBe(1);
+  });
+  it("requires request acceptance and prevents duplicate requests", async () => {
+    const a = await ready(),
+      b = await ready();
+    await expect(
+      call("social_action", [a.id, "message", b.id, "Hi", "m1", "{}"]),
+    ).rejects.toThrow("REQUEST_REQUIRED");
+    const r = (await call("social_action", [
+      a.id,
+      "request",
+      b.id,
+      "Hi",
+      "req",
+      "{}",
+    ])) as { id: string };
+    await expect(
+      call("social_action", [a.id, "request", b.id, "Again", "req2", "{}"]),
+    ).rejects.toThrow("REQUEST_EXISTS");
+    await call("social_action", [
+      b.id,
+      "accept",
+      a.id,
+      "",
+      "accept",
+      JSON.stringify({ id: r.id }),
+    ]);
+    await call("social_action", [a.id, "message", b.id, "Hello", "m2", "{}"]);
+    await call("social_action", [a.id, "message", b.id, "Hello", "m2", "{}"]);
+    expect(
+      (
+        await q(
+          "select count(*)::int n from messages where sender=$1 and body='Hello'",
+          [a.id],
+        )
+      )[0]?.n,
+    ).toBe(1);
+  });
+  it("blocks messages, requests, cards and username search server-side", async () => {
+    const a = await ready(),
+      b = await ready();
+    await call("social_action", [a.id, "block", b.id, "", "block", "{}"]);
+    await expect(
+      call("social_action", [b.id, "message", a.id, "Hi", "blockedm", "{}"]),
+    ).rejects.toThrow("NOT_FOUND");
+    await expect(
+      call("social_action", [b.id, "request", a.id, "Hi", "blockedr", "{}"]),
+    ).rejects.toThrow("NOT_FOUND");
+    expect(await call("card", [b.id, a.id])).toBe(null);
+    const name = (
+      await q("select canonical from usernames where owner_id=$1", [a.id])
+    )[0]?.canonical;
+    expect(await call("discover", [b.id, false, name])).toBe(null);
+  });
+  it("serializes block against sending; nothing can be sent after block commits", async () => {
+    const a = await ready(),
+      b = await ready();
+    await call("social_action", [a.id, "like", b.id, "", "l", "{}"]);
+    await call("social_action", [b.id, "like", a.id, "", "l", "{}"]);
+    await Promise.allSettled([
+      call("social_action", [a.id, "block", b.id, "", "bl", "{}"]),
+      call("social_action", [b.id, "message", a.id, "Race", "race", "{}"]),
+    ]);
+    await expect(
+      call("social_action", [b.id, "message", a.id, "After", "after", "{}"]),
+    ).rejects.toThrow("NOT_FOUND");
+    expect(
+      (
+        await q(
+          "select count(*)::int n from notifications where recipient=$1 and actor=$2 and state='PENDING'",
+          [a.id, b.id],
+        )
+      )[0]?.n,
+    ).toBe(0);
+  });
+  it("limits first message requests", async () => {
+    const a = await ready();
+    for (let n = 0; n < 5; n++) {
+      const b = await ready();
+      await call("social_action", [
+        a.id,
+        "request",
+        b.id,
+        "Hi",
+        String(n),
+        "{}",
+      ]);
+    }
+    const b = await ready();
+    await expect(
+      call("social_action", [a.id, "request", b.id, "Hi", "six", "{}"]),
+    ).rejects.toThrow("LIMIT");
+  });
+  it("creates reports and audits case-bound private content access", async () => {
+    const a = await ready(),
+      b = await ready();
+    await call("social_action", [a.id, "like", b.id, "", "l", "{}"]);
+    await call("social_action", [b.id, "like", a.id, "", "l", "{}"]);
+    await call("social_action", [
+      a.id,
+      "message",
+      b.id,
+      "Reported text",
+      "text",
+      "{}",
+    ]);
+    const r = (await call("social_action", [
+      b.id,
+      "report",
+      a.id,
+      "Report details",
+      "report",
+      JSON.stringify({ category: "harassment" }),
+    ])) as { id: string };
+    const admin = (await q("select id from admin_users where role='OWNER'"))[0]
+      ?.id;
+    const result = (await call("admin_action", [
+      admin,
+      "VIEW_REPORTED_CONVERSATION",
+      r.id,
+      "Investigating report",
+      "{}",
+    ])) as unknown[];
+    expect(result).toHaveLength(1);
+    expect(
+      (
+        await q(
+          "select count(*)::int n from audit_logs where action='VIEW_REPORTED_CONVERSATION' and target=$1",
+          [r.id],
+        )
+      )[0]?.n,
+    ).toBe(1);
+  });
+  it("denies support premium operations and moderator staff changes; protects owner", async () => {
+    const support = (
+      await q("select id from admin_users where role='SUPPORT'")
+    )[0]?.id;
+    await expect(
+      call("admin_action", [
+        support,
+        "RESERVE_USERNAME",
+        "z",
+        "Safety hold",
+        "{}",
+      ]),
+    ).rejects.toThrow("FORBIDDEN");
+    const m = randomUUID();
+    await q("insert into admin_users(id,role) values($1,'MODERATOR')", [m]);
+    await expect(
+      call("admin_action", [
+        m,
+        "DISABLE_STAFF",
+        support,
+        "Disable access",
+        "{}",
+      ]),
+    ).rejects.toThrow("FORBIDDEN");
+    const owner = (await q("select id from admin_users where role='OWNER'"))[0]
+      ?.id;
+    await expect(
+      call("admin_action", [
+        owner,
+        "DISABLE_STAFF",
+        owner,
+        "Disable owner",
+        "{}",
+      ]),
+    ).rejects.toThrow("OWNER_PROTECTED");
+  });
+  it("allows only one concurrent premium gift winner", async () => {
+    const a = await account(),
+      b = await account();
+    const owner = (await q("select id from admin_users where role='OWNER'"))[0]
+      ?.id;
+    const results = await Promise.allSettled([
+      call("admin_action", [
+        owner,
+        "GIFT_USERNAME",
+        "z",
+        "First gift",
+        JSON.stringify({ recipient: a }),
+      ]),
+      call("admin_action", [
+        owner,
+        "GIFT_USERNAME",
+        "z",
+        "Second gift",
+        JSON.stringify({ recipient: b }),
+      ]),
+    ]);
+    expect(results.filter((x) => x.status === "fulfilled")).toHaveLength(1);
+  });
+  it("claims each update exclusively and marks completion", async () => {
+    const a = randomUUID(),
+      b = randomUUID();
+    const result = await Promise.all([
+      call("claim_update", [100, a]),
+      call("claim_update", [100, b]),
+    ]);
+    expect(result.filter(Boolean)).toHaveLength(1);
+    await call("finish_update", [100, result[0] ? a : b, true]);
+    expect(await call("claim_update", [100, randomUUID()])).toBe(false);
+  });
+  it("keeps existing users available when registrations are paused", async () => {
+    const u = await account();
+    const telegram = (
+      await q("select telegram_id from users where id=$1", [u])
+    )[0]?.telegram_id;
+    await q("update settings set value='false' where key='registrations'");
+    expect(await call("onboard", [telegram, "en"])).toBeTruthy();
+    await expect(
+      call("onboard", [Math.floor(Math.random() * 1e12), "en"]),
+    ).rejects.toThrow("PAUSED");
+    await q("update settings set value='true' where key='registrations'");
+  });
+  it("self pause cannot override admin profile hiding", async () => {
+    const a = await ready(),
+      b = await ready();
+    await q(
+      "update profiles set hidden=true,user_paused=true where user_id=$1",
+      [b.id],
+    );
+    await q("update profiles set user_paused=false where user_id=$1", [b.id]);
+    expect(await call("card", [a.id, b.id])).toBeNull();
+  });
+  it("all premium administration controls preserve unique ownership", async () => {
+    const owner = (await q("select id from admin_users where role='OWNER'"))[0]
+      ?.id;
+    const a = await account(),
+      b = await account();
+    await call("admin_action", [
+      owner,
+      "RESERVE_USERNAME",
+      "q",
+      "Reserve rare handle",
+      "{}",
+    ]);
+    await expect(
+      call("admin_action", [
+        owner,
+        "GIFT_USERNAME",
+        "q",
+        "Reserved gift attempt",
+        JSON.stringify({ recipient: a }),
+      ]),
+    ).rejects.toThrow("NOT_AVAILABLE");
+    await call("admin_action", [
+      owner,
+      "RELEASE_USERNAME",
+      "q",
+      "Release reservation",
+      "{}",
+    ]);
+    await call("admin_action", [
+      owner,
+      "GIFT_USERNAME",
+      "q",
+      "Gift rare handle",
+      JSON.stringify({ recipient: a }),
+    ]);
+    expect(
+      (await q("select state from users where id=$1", [a]))[0]?.state,
+    ).toBe("PROFILE");
+    await call("admin_action", [
+      owner,
+      "FREEZE_USERNAME",
+      "q",
+      "Safety freeze",
+      "{}",
+    ]);
+    expect(await call("username_status", ["q"])).toBe("FROZEN");
+    await call("admin_action", [
+      owner,
+      "REASSIGN_USERNAME",
+      "q",
+      "Reviewed reassignment",
+      JSON.stringify({ recipient: b }),
+    ]);
+    expect(
+      (await q("select owner_id from usernames where canonical='q'"))[0]
+        ?.owner_id,
+    ).toBe(b);
+    expect(
+      (await q("select state from users where id=$1", [a]))[0]?.state,
+    ).toBe("USERNAME");
+  });
+  it("enforces monthly 950 cap with simultaneous reservations and no replay", async () => {
+    const ids: unknown[] = [];
+    for (let n = 0; n < 6; n++) {
+      const u = await account();
+      ids.push(await call("photo_begin", [u, null, randomUUID()]));
+    }
+    await q(
+      "update usage_quotas set used=948 where month=date_trunc('month',timezone('UTC',now()))::date",
+    );
+    const results = await Promise.all(
+      ids.map((id) => call("reserve_photo_quota", [id, 950])),
+    );
+    expect(results.filter(Boolean)).toHaveLength(2);
+    expect((await q("select used from usage_quotas"))[0]?.used).toBe(950);
+    expect(await call("reserve_photo_quota", [ids[0], 950])).toBe(false);
   });
 });

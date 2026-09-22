@@ -34,7 +34,12 @@ await api("setWebhook", {
   url: new URL("/telegram/webhook", worker).href,
   secret_token: TELEGRAM_WEBHOOK_SECRET,
   max_connections: 1,
-  allowed_updates: ["message"],
+  allowed_updates: ["message", "callback_query"],
   drop_pending_updates: false,
 });
-console.log("Webhook configured. Test /start in a private chat.");
+const info = await api("getWebhookInfo", {});
+if (info.url !== new URL("/telegram/webhook", worker).href)
+  throw new Error("Webhook URL mismatch");
+console.log(
+  `Webhook verified. Pending updates: ${info.pending_update_count}. Test /start in a private chat.`,
+);

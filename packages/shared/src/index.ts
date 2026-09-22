@@ -78,7 +78,14 @@ export const profileSchema = z.object({
     .min(1)
     .max(3),
   city: z.string().trim().min(2).max(80),
-  intent: z.enum(["serious", "dating", "long_term", "friendship", "unsure"]),
+  intent: z.enum([
+    "serious_relationship",
+    "long_term_relationship",
+    "friendship_first",
+    "open_to_relationship",
+    "getting_to_know_someone",
+    "unsure",
+  ]),
   bio: z.string().max(500),
   interests: z.array(z.string().max(30)).min(5).max(10),
 });
@@ -86,20 +93,4 @@ export const roles = ["OWNER", "SUPER_ADMIN", "MODERATOR", "SUPPORT"] as const;
 export type Role = (typeof roles)[number];
 export function canManageUsernames(role: Role): boolean {
   return role === "OWNER" || role === "SUPER_ADMIN";
-}
-export type PhotoDecision = {
-  status: "APPROVED" | "REJECTED" | "NEEDS_REVIEW";
-  reason: string;
-};
-export interface ModerationProvider {
-  moderate(bytes: Uint8Array, primary: boolean): Promise<PhotoDecision>;
-}
-/** Safe free baseline: no image is published without an actual reviewer. */
-export class ManualModerationProvider implements ModerationProvider {
-  async moderate(): Promise<PhotoDecision> {
-    return {
-      status: "NEEDS_REVIEW",
-      reason: "Human review required before publication",
-    };
-  }
 }

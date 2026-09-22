@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { Bot, Keyboard } from "grammy";
+import { Bot, Keyboard, Api } from "grammy";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import {
@@ -11,7 +11,17 @@ import {
   type Language,
 } from "../../../packages/shared/src/index";
 import { t } from "../../../packages/shared/src/i18n";
+import { boundedBody } from "../../../packages/shared/src/safety";
+import {
+  product,
+  memberSchema,
+  languageButtons,
+  deliver,
+  reportReason,
+} from "./product";
 export interface Env {
+  GOOGLE_SERVICE_ACCOUNT_JSON: string;
+  PHOTO_MODERATION_MONTHLY_LIMIT?: string;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   SUPABASE_URL: string;
@@ -56,7 +66,7 @@ export function validSecret(
 }
 export const app = new Hono<{ Bindings: Env }>();
 app.get("/health", (c) =>
-  c.json({ service: "closeme", phase: "identity-foundation", ok: true }),
+  c.json({ service: "closeme", phase: "relationship-platform", ok: true }),
 );
 app.post("/telegram/webhook", async (c) => {
   if (
@@ -66,11 +76,12 @@ app.post("/telegram/webhook", async (c) => {
     )
   )
     return c.json({ error: "Unauthorized" }, 401);
-  if (Number(c.req.header("content-length") ?? "0") > 262144)
+  let raw: string;
+  try {
+    raw = new TextDecoder().decode(await boundedBody(c.req.raw, 262144));
+  } catch {
     return c.json({ error: "Too large" }, 413);
-  const raw = await c.req.text();
-  if (new TextEncoder().encode(raw).length > 262144)
-    return c.json({ error: "Too large" }, 413);
+  }
   let update;
   try {
     update = updateSchema.parse(JSON.parse(raw));
@@ -87,8 +98,12 @@ app.post("/telegram/webhook", async (c) => {
     .maybeSingle();
   if (receiptError) return c.json({ error: "Unavailable" }, 503);
   if (receipt) return c.json({ ok: true });
-  // Synchronous processing: Telegram retries a 5xx. Never acknowledge before DB work completes.
-  // setWebhook max_connections=1 serializes this initial onboarding-only release.
+  const lease = crypto.randomUUID();
+  const { data: claimed, error: leaseError } = await db.rpc("claim_update", {
+    p_id: update.update_id,
+    p_token: lease,
+  });
+  if (leaseError || !claimed) return c.json({ error: "Retry later" }, 503);
   const bot = new Bot(c.env.TELEGRAM_BOT_TOKEN, {
     botInfo: {
       id: Number(c.env.TELEGRAM_BOT_ID),
@@ -125,11 +140,27 @@ app.post("/telegram/webhook", async (c) => {
           await ctx.reply(t(language(ctx.from?.language_code), "unavailable"));
         return;
       }
+      if (
+        error instanceof z.ZodError ||
+        /LIMIT|PAUSED|NOT_FOUND|INVALID|PROFILE_REQUIRED|PHOTO_|BUSY|REQUEST_|TRANSFER|COOLDOWN|PREMIUM|EXPIRED|CONFIRM|TOKEN|REPLAY|PRIMARY_REQUIRED/.test(
+          message,
+        )
+      ) {
+        if (ctx.chat?.type === "private")
+          await ctx.reply(
+            t(
+              language(ctx.from?.language_code),
+              message.includes("LIMIT") ? "limited" : "error",
+            ),
+          );
+        return;
+      }
       throw error;
     }
   });
-  bot.on("message", async (ctx) => {
-    if (ctx.chat.type !== "private" || ctx.from.is_bot) return;
+  bot.on(["message", "callback_query:data"], async (ctx) => {
+    if (ctx.chat?.type !== "private" || !ctx.from || ctx.from.is_bot) return;
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery();
     const locale = language(ctx.from.language_code);
     if (
       !(await rpc("consume_limit", {
@@ -145,8 +176,45 @@ app.post("/telegram/webhook", async (c) => {
     let user = userSchema.parse(
       await rpc("onboard", { p_telegram: ctx.from.id, p_locale: locale }),
     );
+    const { data: stored, error: storedError } = await db
+      .from("users")
+      .select("id,locale,state,status,language_selected,flow")
+      .eq("id", user.id)
+      .single();
+    if (storedError) throw new Error("DB");
+    let member = memberSchema.parse(stored);
+    const callback = ctx.callbackQuery?.data;
+    if (callback?.startsWith("lang:")) {
+      const selected = z.enum(["en", "uz", "ru"]).parse(callback.slice(5));
+      const { error } = await db
+        .from("users")
+        .update({ locale: selected, language_selected: true })
+        .eq("id", user.id);
+      if (error) throw new Error("DB");
+      user = { ...user, locale: selected };
+      member = { ...member, locale: selected, language_selected: true };
+    }
+    if (!member.language_selected) {
+      await ctx.reply("English · O‘zbekcha · Русский", {
+        reply_markup: languageButtons(),
+      });
+      return;
+    }
     const l: Language = user.locale;
-    const text = ctx.message.text;
+    const text = ctx.message?.text;
+    if (text === "/start" || text === "/cancel") {
+      const { error } = await db
+        .from("users")
+        .update({ flow: {} })
+        .eq("id", user.id);
+      if (error) throw new Error("DB");
+      member = { ...member, flow: { kind: "", draft: {}, interests: [] } };
+    }
+    if (callback?.startsWith("t:")) return product(ctx, db, member, c.env);
+    if (user.state === "PROFILE" || user.state === "READY") {
+      if (callback?.startsWith("reason:")) return reportReason(ctx, db, member);
+      return product(ctx, db, member, c.env);
+    }
     async function prompt() {
       const remove = { reply_markup: { remove_keyboard: true } as const };
       if (user.state === "AGE")
@@ -171,15 +239,12 @@ app.post("/telegram/webhook", async (c) => {
       else if (user.state === "DENIED") await ctx.reply(t(l, "denied"), remove);
       else {
         const { data, error } = await db
-          .from("usernames")
-          .select("canonical")
-          .eq("owner_id", user.id)
-          .maybeSingle();
+          .from("users")
+          .select("id,locale,state,status,language_selected,flow")
+          .eq("id", user.id)
+          .single();
         if (error) throw new Error("DB");
-        await ctx.reply(
-          t(l, "done", { username: data?.canonical ?? "" }),
-          remove,
-        );
+        await product(ctx, db, memberSchema.parse(data), c.env);
       }
     }
     if (text === "/help") {
@@ -224,14 +289,14 @@ app.post("/telegram/webhook", async (c) => {
       );
     } else if (user.state === "CONTACT") {
       if (
-        !ctx.message.contact ||
-        !ownContact(ctx.from.id, ctx.message.contact)
+        !ctx.message?.contact ||
+        !ownContact(ctx.from.id, ctx.message?.contact)
       ) {
         await ctx.reply(t(l, "wrong_contact"));
         return;
       }
       const hash = await phoneHmac(
-        ctx.message.contact.phone_number,
+        ctx.message?.contact.phone_number,
         c.env.PHONE_HMAC_SECRET,
       );
       user = userSchema.parse(
@@ -286,12 +351,20 @@ app.post("/telegram/webhook", async (c) => {
   });
   try {
     await bot.handleUpdate(update as Parameters<typeof bot.handleUpdate>[0]);
-    const { error } = await db
-      .from("webhook_receipts")
-      .upsert({ update_id: update.update_id }, { onConflict: "update_id" });
+    const { error } = await db.rpc("finish_update", {
+      p_id: update.update_id,
+      p_token: lease,
+      p_ok: true,
+    });
     if (error) return c.json({ error: "Unavailable" }, 503);
+    c.executionCtx.waitUntil(deliver(bot.api, db).catch(() => undefined));
     return c.json({ ok: true });
   } catch {
+    await db.rpc("finish_update", {
+      p_id: update.update_id,
+      p_token: lease,
+      p_ok: false,
+    });
     // Never log request bodies, contacts, token-bearing URLs or Supabase errors.
     console.error(
       JSON.stringify({ event: "webhook_failed", update_id: update.update_id }),
@@ -299,4 +372,16 @@ app.post("/telegram/webhook", async (c) => {
     return c.json({ error: "Processing failed" }, 503);
   }
 });
-export default app;
+export default {
+  fetch: app.fetch,
+  async scheduled(
+    _event: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext,
+  ) {
+    const db = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
+      auth: { persistSession: false },
+    });
+    ctx.waitUntil(deliver(new Api(env.TELEGRAM_BOT_TOKEN), db));
+  },
+};

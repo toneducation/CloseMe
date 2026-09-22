@@ -4,7 +4,6 @@ import {
   isAdult,
   ownContact,
   phoneHmac,
-  ManualModerationProvider,
   canManageUsernames,
 } from "../packages/shared/src/index";
 import { dictionaries } from "../packages/shared/src/i18n";
@@ -42,10 +41,6 @@ describe("identity boundary", () => {
       Object.keys(dictionaries.en).sort(),
     );
   });
-  it("does not auto-approve unreviewed images", async () =>
-    expect((await new ManualModerationProvider().moderate()).status).toBe(
-      "NEEDS_REVIEW",
-    ));
   it("denies premium management to support and moderators", () => {
     expect(canManageUsernames("SUPPORT")).toBe(false);
     expect(canManageUsernames("MODERATOR")).toBe(false);

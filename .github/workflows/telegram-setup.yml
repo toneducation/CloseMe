@@ -1,0 +1,25 @@
+name: Configure Telegram webhook
+on:
+  workflow_dispatch:
+    inputs:
+      worker_url:
+        description: Public HTTPS bot Worker origin (no secret)
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  configure:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Configure and verify webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          WORKER_URL: ${{ inputs.worker_url }}
+        run: node scripts/telegram-setup.mjs
