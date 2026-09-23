@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { randomUUID, generateKeyPairSync } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 import { app, type Env } from "../apps/bot/src/index";
@@ -627,9 +627,6 @@ describe("relationship safety transactions", () => {
 async function botSession(
   telegram: number,
   options: {
-    credentials?: string;
-    decision?: "SAFE" | "UNSAFE" | "ERROR";
-    aiDecision?: "SAFE" | "UNSAFE" | "ERROR";
     storageError?: boolean;
     fileError?: boolean;
   } = {},
@@ -655,23 +652,6 @@ async function botSession(
           ? JSON.parse(init.body)
           : {};
       externalCalls.push(url.hostname + url.pathname);
-      if (url.hostname === "oauth2.googleapis.com")
-        return Response.json({ access_token: "test-access-token" });
-      if (url.hostname === "vision.googleapis.com")
-        return options.decision === "ERROR"
-          ? new Response("unavailable", { status: 503 })
-          : Response.json({
-              responses: [
-                {
-                  safeSearchAnnotation: {
-                    adult:
-                      options.decision === "UNSAFE" ? "LIKELY" : "UNLIKELY",
-                    racy: "UNLIKELY",
-                    violence: "UNLIKELY",
-                  },
-                },
-              ],
-            });
       if (url.hostname === "api.telegram.org") {
         if (url.pathname.includes("/file/bot"))
           return new Response(new Uint8Array([255, 216, 255, 217]));
