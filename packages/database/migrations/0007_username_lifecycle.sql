@@ -102,6 +102,23 @@ begin
  return jsonb_build_object('username',v,'changed',true,'previous',old_handle.canonical);
 end $$;
 
-revoke execute on function public.username_self_status(uuid),public.change_username(uuid,text) from public,anon,authenticated;
+
+create function public.username_lookup(p_user uuid,p_name text) returns jsonb
+language plpgsql security definer set search_path=public,pg_temp as $
+declare v text:=lower(trim(leading '@' from trim(coalesce(p_name,'')))); target uuid;
+begin
+ if v !~ '^[a-z0-9]{1,25}
+grant execute on function public.username_self_status(uuid),public.change_username(uuid,text) to service_role;
+commit;
+ then return null;end if;
+ if not active_user(p_user) then raise exception 'ACCOUNT_UNAVAILABLE';end if;
+ perform require_limit(p_user,'username_search',30,60);
+ select owner_id into target from usernames where canonical=v and status='ASSIGNED';
+ if target is null then return null;end if;
+ if target<>p_user and (not visible_user(p_user) or not visible_user(target) or blocked_pair(p_user,target)) then return null;end if;
+ return card(p_user,target);
+end $;
+
+revoke execute on function public.username_self_status(uuid),public.change_username(uuid,text),public.username_lookup(uuid,text) from public,anon,authenticated;
 grant execute on function public.username_self_status(uuid),public.change_username(uuid,text) to service_role;
 commit;
