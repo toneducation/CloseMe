@@ -7,7 +7,12 @@ import {
 } from "grammy";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
-import { escapeHtml, type Language } from "../../../packages/shared/src/index";
+import {
+  canonicalUsername,
+  escapeHtml,
+  phoneHmac,
+  type Language,
+} from "../../../packages/shared/src/index";
 import {
   p,
   intents,
@@ -335,6 +340,44 @@ export async function product(
     }
     await ctx.reply(p(l, step as ProductKey), { reply_markup: k });
   }
+  if (cb?.startsWith("uc:")) {
+    if (flow.kind !== "username_change_confirm") throw new Error("INVALID");
+    const requested = canonicalUsername(cb.slice(3));
+    if (requested.length < 2 || requested !== flow.draft.name)
+      throw new Error("INVALID");
+    try {
+      const changed = await rpc(db, "change_username", {
+        p_user: u.id,
+        p_name: requested,
+      });
+      await setFlow({});
+      await ctx.reply(p(l, "change_done", { name: changed.username }), {
+        reply_markup: menu(l),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message.includes("COOLDOWN")) {
+        await ctx.reply(p(l, "transfer_cooldown"), {
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:username_settings",
+          ),
+        });
+        return;
+      }
+      if (/TAKEN|RESERVED|FROZEN|PREMIUM|NOT_ALLOWED/.test(message)) {
+        await ctx.reply(p(l, "username_unavailable"), {
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:change_username",
+          ),
+        });
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
   if (cb?.startsWith("t:")) {
     const [, id, token] = cb.split(":");
     uuid.parse(id);
@@ -380,9 +423,76 @@ export async function product(
       );
       return;
     }
-    if (action === "search" || action === "transfer") {
-      await setFlow({ kind: action });
+    if (action === "search") {
+      await setFlow({ kind: "search" });
       await ctx.reply(p(l, "query"));
+      return;
+    }
+    if (action === "username_settings") {
+      const status = await rpc(db, "username_self_status", { p_user: u.id });
+      const k = new InlineKeyboard()
+        .text(p(l, "change_username"), "m:change_username")
+        .row()
+        .text(p(l, "transfer"), "m:transfer")
+        .row()
+        .text(p(l, "back"), "m:settings");
+      await ctx.reply(`${p(l, "username_settings")}: @${status.username}`, {
+        reply_markup: k,
+      });
+      return;
+    }
+    if (action === "change_username") {
+      const status = await rpc(db, "username_self_status", { p_user: u.id });
+      if (!status.can_change) {
+        const date = status.next_change_at
+          ? new Date(status.next_change_at).toLocaleDateString(
+              l === "uz" ? "uz-UZ" : l === "ru" ? "ru-RU" : "en-GB",
+            )
+          : "";
+        await ctx.reply(p(l, "change_cooldown", { date }), {
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:username_settings",
+          ),
+        });
+        return;
+      }
+      await setFlow({ kind: "username_change" });
+      await ctx.reply(p(l, "change_query"), {
+        reply_markup: new InlineKeyboard().text(
+          p(l, "back"),
+          "m:username_settings",
+        ),
+      });
+      return;
+    }
+    if (action === "transfer") {
+      const status = await rpc(db, "username_self_status", { p_user: u.id });
+      if (status.premium) {
+        await ctx.reply(p(l, "transfer_premium"), {
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:username_settings",
+          ),
+        });
+        return;
+      }
+      if (!status.can_transfer) {
+        await ctx.reply(p(l, "transfer_cooldown"), {
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:username_settings",
+          ),
+        });
+        return;
+      }
+      await setFlow({ kind: "transfer" });
+      await ctx.reply(p(l, "transfer_query"), {
+        reply_markup: new InlineKeyboard().text(
+          p(l, "back"),
+          "m:username_settings",
+        ),
+      });
       return;
     }
     if (action === "edit") return wizard();
@@ -463,7 +573,7 @@ export async function product(
       const k = new InlineKeyboard();
       (
         [
-          "transfer",
+          "username_settings",
           "filters",
           "forget_location",
           "notifications",
@@ -686,6 +796,33 @@ export async function product(
     await setFlow({});
     return showMenu(ctx, l);
   }
+  if (text && flow.kind === "username_change") {
+    let name: string;
+    try {
+      name = canonicalUsername(text);
+      if (name.length < 2) throw new Error("INVALID");
+    } catch {
+      await ctx.reply(p(l, "username_unavailable"));
+      return;
+    }
+    const status = await rpc(db, "username_status", { p_name: name });
+    if (status !== "AVAILABLE") {
+      await ctx.reply(p(l, "username_unavailable"));
+      return;
+    }
+    const current = await rpc(db, "username_self_status", { p_user: u.id });
+    await setFlow({
+      kind: "username_change_confirm",
+      draft: { name, old: current.username },
+    });
+    await ctx.reply(p(l, "change_preview", { old: current.username, name }), {
+      reply_markup: new InlineKeyboard()
+        .text(p(l, "confirm"), `uc:${name}`)
+        .text(p(l, "back"), "m:username_settings"),
+    });
+    return;
+  }
+
   if (text && flow.kind === "profile") {
     const d = { ...flow.draft };
     if (flow.step === "name") {
@@ -702,13 +839,22 @@ export async function product(
     }
   }
   if (text && flow.kind === "search") {
-    const name = z
-      .string()
-      .regex(/^[a-zA-Z0-9]{1,25}$/)
-      .parse(text.replace(/^@/, ""));
-    const c = await rpc(db, "discover", { p_user: u.id, p_name: name });
-    if (!c) await ctx.reply(p(l, "notfound"));
-    else await showCard(ctx, db, u, c);
+    let name: string;
+    try {
+      name = canonicalUsername(text);
+    } catch {
+      await ctx.reply(p(l, "notfound"));
+      return;
+    }
+    const found = await rpc(db, "username_lookup", {
+      p_user: u.id,
+      p_name: name,
+    });
+    if (!found) await ctx.reply(p(l, "notfound"));
+    else {
+      if (found.id === u.id) await ctx.reply(p(l, "username_own_profile"));
+      await showCard(ctx, db, u, found, found.id === u.id);
+    }
     return;
   }
   if (text && flow.kind === "compose" && flow.target) {
@@ -725,45 +871,129 @@ export async function product(
     });
     return;
   }
-  if (text && flow.kind === "transfer") {
-    const name = z
-      .string()
-      .regex(/^[a-zA-Z0-9]{2,25}$/)
-      .parse(text.replace(/^@/, ""))
-      .toLowerCase();
-    const { data, error } = await db
-      .from("usernames")
-      .select("owner_id,canonical")
-      .eq("canonical", name)
-      .eq("status", "ASSIGNED")
-      .single();
-    if (error || !data.owner_id) throw new Error("NOT_FOUND");
+  if ((text || ctx.message?.contact) && flow.kind === "transfer") {
+    let recipientId: string | undefined;
+    let recipientName: string | undefined;
+
+    if (ctx.message?.contact) {
+      const hash = await phoneHmac(
+        ctx.message.contact.phone_number,
+        env.PHONE_HMAC_SECRET,
+      );
+      const { data, error } = await db
+        .from("users")
+        .select("id")
+        .eq("phone_hmac", hash)
+        .eq("status", "ACTIVE")
+        .maybeSingle();
+      if (error) throw new Error("DB");
+      recipientId = data?.id;
+    } else {
+      const raw = (text ?? "").trim();
+      const maybeUsername = raw.replace(/^@/, "");
+      if (/^[A-Za-z0-9]{1,25}$/.test(maybeUsername)) {
+        const name = maybeUsername.toLowerCase();
+        const { data, error } = await db
+          .from("usernames")
+          .select("owner_id,canonical")
+          .eq("canonical", name)
+          .eq("status", "ASSIGNED")
+          .maybeSingle();
+        if (error) throw new Error("DB");
+        recipientId = data?.owner_id ?? undefined;
+        recipientName = data?.canonical ?? undefined;
+      } else {
+        try {
+          const hash = await phoneHmac(raw, env.PHONE_HMAC_SECRET);
+          const { data, error } = await db
+            .from("users")
+            .select("id")
+            .eq("phone_hmac", hash)
+            .eq("status", "ACTIVE")
+            .maybeSingle();
+          if (error) throw new Error("DB");
+          recipientId = data?.id;
+        } catch {
+          recipientId = undefined;
+        }
+      }
+    }
+
+    if (!recipientId || recipientId === u.id) {
+      await ctx.reply(p(l, "recipient_not_found"), {
+        reply_markup: new InlineKeyboard().text(
+          p(l, "back"),
+          "m:username_settings",
+        ),
+      });
+      return;
+    }
+    if (!recipientName) {
+      const { data, error } = await db
+        .from("usernames")
+        .select("canonical")
+        .eq("owner_id", recipientId)
+        .eq("status", "ASSIGNED")
+        .maybeSingle();
+      if (error) throw new Error("DB");
+      recipientName = data?.canonical ?? undefined;
+    }
+    if (!recipientName) {
+      await ctx.reply(p(l, "recipient_not_found"));
+      return;
+    }
+
     const token = btoa(
       String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))),
     )
       .replaceAll("+", "-")
       .replaceAll("/", "_")
       .replace(/=+$/, "");
-    const id = await rpc(db, "begin_transfer", {
-      p_sender: u.id,
-      p_recipient: data.owner_id,
-      p_hash: await sha256(token),
-    });
-    const { data: tr, error: e } = await db
-      .from("username_transfers")
-      .select("canonical")
-      .eq("id", id)
-      .single();
-    if (e) throw new Error("DB");
-    await setFlow({});
-    await ctx.reply(
-      p(l, "transfer_confirm", { name: tr.canonical, recipient: name }),
-      {
-        reply_markup: new InlineKeyboard()
-          .text(p(l, "confirm"), `t:${id}:${token}`)
-          .text(p(l, "back"), "m:home"),
-      },
-    );
+    try {
+      const id = await rpc(db, "begin_transfer", {
+        p_sender: u.id,
+        p_recipient: recipientId,
+        p_hash: await sha256(token),
+      });
+      const { data: tr, error: e } = await db
+        .from("username_transfers")
+        .select("canonical")
+        .eq("id", id)
+        .single();
+      if (e) throw new Error("DB");
+      await setFlow({});
+      await ctx.reply(
+        p(l, "transfer_confirm", {
+          name: tr.canonical,
+          recipient: `@${recipientName}`,
+        }),
+        {
+          reply_markup: new InlineKeyboard()
+            .text(p(l, "confirm"), `t:${id}:${token}`)
+            .text(p(l, "back"), "m:username_settings"),
+        },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (message.includes("COOLDOWN")) {
+        await ctx.reply(p(l, "transfer_cooldown"), {
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:username_settings",
+          ),
+        });
+        return;
+      }
+      if (message.includes("PREMIUM_ADMIN_ONLY")) {
+        await ctx.reply(p(l, "transfer_premium"));
+        return;
+      }
+      if (/ACCOUNT_UNAVAILABLE|SAME_USER|NOT_FOUND/.test(message)) {
+        await ctx.reply(p(l, "recipient_not_found"));
+        return;
+      }
+      throw error;
+    }
     return;
   }
   if (u.state === "PROFILE") {
