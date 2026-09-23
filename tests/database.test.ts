@@ -57,6 +57,7 @@ beforeAll(async () => {
     "0003_administration.sql",
     "0005_optional_profile_photo.sql",
     "0006_photo_error_classification.sql",
+    "0007_username_lifecycle.sql",
   ]) {
     await exec(
       readFileSync(
