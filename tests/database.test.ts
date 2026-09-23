@@ -1110,9 +1110,7 @@ describe("real photo upload handler regression", () => {
   it.each(["TELEGRAM_FILE", "STORAGE"])(
     "reports %s upload failures accurately and preserves the old photo",
     async (stage) => {
-      const tg =
-        810000000 +
-        ["TELEGRAM_FILE", "STORAGE"].indexOf(stage) * 1000;
+      const tg = 810000000 + ["TELEGRAM_FILE", "STORAGE"].indexOf(stage) * 1000;
       const u = await uploadAccount(tg);
       const bot = await botSession(tg, {
         fileError: stage === "TELEGRAM_FILE",
