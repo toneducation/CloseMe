@@ -911,6 +911,12 @@ describe("Telegram webhook registration regression", () => {
       expect(await call("visible_user", [u.id])).toBe(true);
       expect((await bot.send("/start"))?.reply_markup).toBeDefined();
 
+      // Registration intentionally exercises many updates; reset only the test
+      // actor's per-minute webhook limiter before testing the READY-state menu.
+      await q("delete from rate_limits where actor=$1 and action='updates'", [
+        String(tg),
+      ]);
+
       await bot.send("m:search", true);
       await bot.send("@flowaziz");
       expect(bot.replies.at(-1)?.text).toContain("@flowaziz");
