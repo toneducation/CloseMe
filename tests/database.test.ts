@@ -58,6 +58,7 @@ beforeAll(async () => {
     "0005_optional_profile_photo.sql",
     "0006_photo_error_classification.sql",
     "0007_username_lifecycle.sql",
+    "0008_social_profile_polish.sql",
   ]) {
     await exec(
       readFileSync(
@@ -999,6 +1000,19 @@ describe("Telegram webhook registration regression", () => {
     } finally {
       bot.close();
     }
+  });
+
+  it("stores Instagram and exposes it in profile cards", async () => {
+    const u = await ready();
+    expect(await call("set_instagram", [u.id, "Aziz.Arch"])).toBe("aziz.arch");
+    const card = (await call("card", [u.id, u.id])) as {
+      instagram_username: string | null;
+    };
+    expect(card.instagram_username).toBe("aziz.arch");
+    await expect(call("set_instagram", [u.id, "bad..name"])).rejects.toThrow(
+      "INVALID_INSTAGRAM",
+    );
+    expect(await call("set_instagram", [u.id, ""])).toBe(null);
   });
 
   it("denies an underage DOB in the real message handler", async () => {
