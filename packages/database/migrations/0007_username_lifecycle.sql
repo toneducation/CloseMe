@@ -1,4 +1,4 @@
--- Safe, additive repair for CloseMe username search/change and transfer cooldown.
+-- Safe additive repair for CloseMe username search, rename, and transfer cooldown.
 begin;
 create or replace function public.identity_begin_transfer(p_sender uuid,p_recipient uuid,p_hash text) returns uuid language plpgsql security definer set search_path=public,pg_temp as $$
 declare h public.usernames; result uuid;
@@ -50,8 +50,8 @@ begin
 end $$;
 
 
--- A person's initial registration and admin premium gift do not consume their
--- self-service rename; subsequent changes and transfers require seven days.
+-- Initial registration and admin premium assignment do not consume the user's
+-- self-service rename cooldown. A successful user rename does.
 create function public.username_self_status(p_user uuid) returns jsonb
 language plpgsql security definer set search_path=public,pg_temp as $$
 declare u public.users; h public.usernames; last_change timestamptz; last_transfer timestamptz;
@@ -63,15 +63,26 @@ begin
  select max(created_at) into last_change from username_history where action='CHANGE' and to_user=p_user;
  select max(created_at) into last_transfer from username_history
  where action='TRANSFER' and (from_user=p_user or to_user=p_user);
- return jsonb_build_object('username',h.canonical,'premium',h.premium,
+ return jsonb_build_object(
+   'username',h.canonical,
+   'premium',h.premium,
    'can_change',last_change is null or last_change<=now()-interval '7 days',
    'next_change_at',case when last_change>now()-interval '7 days' then last_change+interval '7 days' else null end,
-   'can_transfer',not h.premium and greatest(coalesce(last_change,'-infinity'::timestamptz),coalesce(last_transfer,'-infinity'::timestamptz))<=now()-interval '7 days');
+   'can_transfer',not h.premium and greatest(
+     coalesce(last_change,'-infinity'::timestamptz),
+     coalesce(last_transfer,'-infinity'::timestamptz)
+   )<=now()-interval '7 days'
+ );
 end $$;
 
 create function public.change_username(p_user uuid,p_name text) returns jsonb
 language plpgsql security definer set search_path=public,pg_temp as $$
-declare v text:=lower(trim(leading '@' from trim(coalesce(p_name,'')))); u public.users; old_handle public.usernames; last_change timestamptz; availability text;
+declare
+ v text:=lower(trim(leading '@' from trim(coalesce(p_name,''))));
+ u public.users;
+ old_handle public.usernames;
+ last_change timestamptz;
+ availability text;
 begin
  if v !~ '^[a-z0-9]{2,25}$' then raise exception 'NOT_ALLOWED';end if;
  perform pg_advisory_xact_lock(810021);
@@ -81,44 +92,62 @@ begin
  select * into old_handle from usernames where owner_id=p_user for update;
  if not found or old_handle.status<>'ASSIGNED' then raise exception 'NO_USERNAME';end if;
  if old_handle.canonical=v then return jsonb_build_object('username',v,'changed',false);end if;
- select max(created_at) into last_change from username_history where to_user=p_user and action='CHANGE';
+
+ select max(created_at) into last_change
+ from username_history where to_user=p_user and action='CHANGE';
  if last_change>now()-interval '7 days' then raise exception 'COOLDOWN';end if;
+
  perform pg_advisory_xact_lock(hashtextextended(v,0));
  availability:=username_status(v);
  if availability<>'AVAILABLE' then raise exception '%',availability;end if;
- -- First reserve the target, then atomically release the old handle.
+
+ -- Reserve the target before releasing the current handle so failure is atomic.
  insert into usernames(canonical,owner_id,status) values(v,null,'RESERVED')
  on conflict(canonical) do update set status='RESERVED'
  where usernames.status='AVAILABLE' and usernames.owner_id is null;
  if not found then raise exception 'TAKEN';end if;
+
  update username_transfers set state='CANCELLED'
  where state in ('DRAFT','PENDING') and (sender_id=p_user or recipient_id=p_user);
- update usernames set owner_id=null,status=case when premium then 'RESERVED' else 'AVAILABLE' end
+
+ update usernames
+ set owner_id=null,status=case when premium then 'RESERVED' else 'AVAILABLE' end
  where canonical=old_handle.canonical;
  update usernames set owner_id=p_user,status='ASSIGNED' where canonical=v;
  update users set username_changed_at=now() where id=p_user;
- insert into username_history(canonical,from_user,action) values(old_handle.canonical,p_user,'RELEASE_ON_CHANGE');
- insert into username_history(canonical,to_user,action) values(v,p_user,'CHANGE');
+
+ insert into username_history(canonical,from_user,action)
+ values(old_handle.canonical,p_user,'RELEASE_ON_CHANGE');
+ insert into username_history(canonical,to_user,action)
+ values(v,p_user,'CHANGE');
+
  return jsonb_build_object('username',v,'changed',true,'previous',old_handle.canonical);
 end $$;
 
-
 create function public.username_lookup(p_user uuid,p_name text) returns jsonb
-language plpgsql security definer set search_path=public,pg_temp as $
-declare v text:=lower(trim(leading '@' from trim(coalesce(p_name,'')))); target uuid;
+language plpgsql security definer set search_path=public,pg_temp as $$
+declare
+ v text:=lower(trim(leading '@' from trim(coalesce(p_name,''))));
+ target uuid;
 begin
- if v !~ '^[a-z0-9]{1,25}
-grant execute on function public.username_self_status(uuid),public.change_username(uuid,text) to service_role;
-commit;
- then return null;end if;
+ if v !~ '^[a-z0-9]{1,25}$' then return null;end if;
  if not active_user(p_user) then raise exception 'ACCOUNT_UNAVAILABLE';end if;
  perform require_limit(p_user,'username_search',30,60);
- select owner_id into target from usernames where canonical=v and status='ASSIGNED';
+
+ select owner_id into target
+ from usernames
+ where canonical=v and status='ASSIGNED';
+
  if target is null then return null;end if;
- if target<>p_user and (not visible_user(p_user) or not visible_user(target) or blocked_pair(p_user,target)) then return null;end if;
+ if target<>p_user and (
+   not visible_user(p_user) or
+   not visible_user(target) or
+   blocked_pair(p_user,target)
+ ) then return null;end if;
+
  return card(p_user,target);
-end $;
+end $$;
 
 revoke execute on function public.username_self_status(uuid),public.change_username(uuid,text),public.username_lookup(uuid,text) from public,anon,authenticated;
-grant execute on function public.username_self_status(uuid),public.change_username(uuid,text) to service_role;
+grant execute on function public.username_self_status(uuid),public.change_username(uuid,text),public.username_lookup(uuid,text) to service_role;
 commit;
