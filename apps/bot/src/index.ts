@@ -215,7 +215,7 @@ app.post("/telegram/webhook", async (c) => {
       languageChanged = true;
     }
     if (!member.language_selected) {
-      await ctx.reply("English · O‘zbekcha · Русский", {
+      await ctx.reply("🌐 Choose your language\nTilni tanlang\nВыберите язык", {
         reply_markup: languageButtons(),
       });
       return;
