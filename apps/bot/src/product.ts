@@ -294,7 +294,8 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
   );
   let path: string | undefined;
   let stage = "TELEGRAM_FILE";
-  const diagnostic = (code: string) =>
+  const diagnostic = (code: string) => {
+    stage = code;
     console.warn(
       JSON.stringify({
         event: "photo_upload_failed",
@@ -302,6 +303,7 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
         stage: code,
       }),
     );
+  };
   try {
     const configuredLimit = Number(env.PHOTO_MODERATION_MONTHLY_LIMIT);
     const lim =
@@ -350,6 +352,9 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
         p_photo: pid,
         p_decision: "ERROR",
       });
+      await write(
+        db.from("photos").update({ failure_stage: "QUOTA" }).eq("id", pid),
+      );
       await ctx.reply(p(l, "photo_unavailable"));
       return;
     }
@@ -372,6 +377,10 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
     });
     if (!approved && path)
       await db.storage.from("profile-photos").remove([path]);
+    if (!approved && decision === "ERROR")
+      await write(
+        db.from("photos").update({ failure_stage: stage }).eq("id", pid),
+      );
     await ctx.reply(
       p(
         l,
@@ -409,6 +418,7 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
       p_photo: pid,
       p_decision: "ERROR",
     });
+    await write(db.from("photos").update({ failure_stage: stage }).eq("id", pid));
     await ctx.reply(p(l, "photo_unavailable"), {
       reply_markup: new InlineKeyboard().text(
         p(l, "replace"),
