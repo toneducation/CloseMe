@@ -94,8 +94,138 @@ export function menu(l: Language) {
     .text(p(l, "profile"), "m:profile")
     .text(p(l, "settings"), "m:settings");
 }
+
+type PremiumEmoji = { id: string; alt: string };
+let premiumEmojiCache:
+  { expiresAt: number; byAlt: Map<string, PremiumEmoji> } | undefined;
+let premiumEmojiSendingAllowed = true;
+const premiumEmojiSets = ["fluencynew", "FinanceEmoji"] as const;
+
+function emojiKey(value: string) {
+  return value.replaceAll("\uFE0F", "");
+}
+
+async function premiumEmojiMap(ctx: Context) {
+  if (premiumEmojiCache && premiumEmojiCache.expiresAt > Date.now())
+    return premiumEmojiCache.byAlt;
+  const byAlt = new Map<string, PremiumEmoji>();
+  for (const setName of premiumEmojiSets) {
+    try {
+      const set = await ctx.api.getStickerSet(setName);
+      for (const sticker of set.stickers) {
+        if (!sticker.custom_emoji_id || !sticker.emoji) continue;
+        const key = emojiKey(sticker.emoji);
+        if (!byAlt.has(key))
+          byAlt.set(key, { id: sticker.custom_emoji_id, alt: sticker.emoji });
+      }
+    } catch {
+      continue;
+    }
+  }
+  premiumEmojiCache = {
+    expiresAt: Date.now() + 6 * 60 * 60_000,
+    byAlt,
+  };
+  return byAlt;
+}
+
+function animatedEmoji(
+  byAlt: Map<string, PremiumEmoji>,
+  fallback: string,
+): string {
+  if (!premiumEmojiSendingAllowed) return escapeHtml(fallback);
+  const item = byAlt.get(emojiKey(fallback));
+  if (!item) return escapeHtml(fallback);
+  return `<tg-emoji emoji-id="${item.id}">${escapeHtml(item.alt)}</tg-emoji>`;
+}
+
+function withoutAnimatedEmoji(html: string) {
+  return html.replace(/<tg-emoji emoji-id="[^"]+">([^<]+)<\/tg-emoji>/g, "$1");
+}
+
+async function replyPremium(
+  ctx: Context,
+  html: string,
+  replyMarkup?: InlineKeyboard,
+) {
+  try {
+    await ctx.reply(html, {
+      parse_mode: "HTML",
+      reply_markup: replyMarkup,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!/custom.?emoji|emoji.?id|CUSTOM_EMOJI/i.test(message)) throw error;
+    premiumEmojiSendingAllowed = false;
+    await ctx.reply(withoutAnimatedEmoji(html), {
+      parse_mode: "HTML",
+      reply_markup: replyMarkup,
+    });
+  }
+}
+
+function premiumMenuText(l: Language, e: (emoji: string) => string): string {
+  if (l === "uz")
+    return `${e("✨")} <b>CloseMe</b> ga xush kelibsiz
+
+Bu yerda yangi insonlar bilan tanishishingiz va Telegram profilingizni oshkor qilmasdan muloqot qilishingiz mumkin.
+
+<blockquote>${e("💗")} <b>Yoqtirish</b> — bir-biringizni yoqtirsangiz, match bo‘ladi
+${e("📍")} <b>Yaqindagilar</b> — hududingizdagi profillarni toping
+${e("💬")} <b>Xabarlar</b> — CloseMe ichida maxfiy suhbat</blockquote>
+
+<b>Kerakli bo‘limni tanlang ↓</b>`;
+  if (l === "ru")
+    return `${e("✨")} Добро пожаловать в <b>CloseMe</b>
+
+Здесь можно знакомиться с новыми людьми и общаться, не раскрывая свой профиль Telegram.
+
+<blockquote>${e("💗")} <b>Симпатия</b> — взаимная симпатия создаёт match
+${e("📍")} <b>Рядом</b> — находите людей поблизости
+${e("💬")} <b>Чаты</b> — приватное общение внутри CloseMe</blockquote>
+
+<b>Выберите раздел ниже ↓</b>`;
+  return `${e("✨")} Welcome to <b>CloseMe</b>
+
+Meet new people and chat without exposing your personal Telegram profile.
+
+<blockquote>${e("💗")} <b>Like</b> — mutual likes become a match
+${e("📍")} <b>Nearby</b> — discover people around your area
+${e("💬")} <b>Chats</b> — private conversations inside CloseMe</blockquote>
+
+<b>Choose an option below ↓</b>`;
+}
+
+function premiumSettingsText(
+  l: Language,
+  e: (emoji: string) => string,
+): string {
+  if (l === "uz")
+    return `${e("⚙️")} <b>Profil sozlamalari</b>
+
+<i>Username, Instagram, qidiruv filtrlari, til va maxfiylikni shu yerdan boshqaring.</i>`;
+  if (l === "ru")
+    return `${e("⚙️")} <b>Настройки профиля</b>
+
+<i>Здесь можно управлять именем, Instagram, фильтрами, языком и приватностью.</i>`;
+  return `${e("⚙️")} <b>Profile settings</b>
+
+<i>Manage your username, Instagram, discovery filters, language and privacy here.</i>`;
+}
+
 export async function showMenu(ctx: Context, l: Language) {
-  await ctx.reply(p(l, "menu"), { reply_markup: menu(l) });
+  const emoji = await premiumEmojiMap(ctx);
+  const e = (value: string) => animatedEmoji(emoji, value);
+  await replyPremium(ctx, premiumMenuText(l, e), menu(l));
+}
+
+export async function showLanguagePicker(ctx: Context) {
+  const emoji = await premiumEmojiMap(ctx);
+  const e = (value: string) => animatedEmoji(emoji, value);
+  const text = `${e("🌐")} <b>Choose your language</b>
+Tilni tanlang
+Выберите язык`;
+  await replyPremium(ctx, text, languageButtons());
 }
 type InterestLabel = { id: string; label: string };
 const interestCache = new Map<
@@ -657,13 +787,13 @@ export async function product(
       ).forEach((x) =>
         k.text(p(l, x === "filters" ? "filter_button" : x), `m:${x}`).row(),
       );
-      await ctx.reply(p(l, "settings"), { reply_markup: k });
+      const emoji = await premiumEmojiMap(ctx);
+      const e = (value: string) => animatedEmoji(emoji, value);
+      await replyPremium(ctx, premiumSettingsText(l, e), k);
       return;
     }
     if (action === "language") {
-      await ctx.reply("🌐 Choose your language\nTilni tanlang\nВыберите язык", {
-        reply_markup: languageButtons(),
-      });
+      await showLanguagePicker(ctx);
       return;
     }
     if (action === "filters") {
