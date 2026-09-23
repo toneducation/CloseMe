@@ -627,6 +627,7 @@ async function botSession(
   options: {
     credentials?: string;
     decision?: "SAFE" | "UNSAFE" | "ERROR";
+    aiDecision?: "SAFE" | "UNSAFE" | "ERROR";
     storageError?: boolean;
     fileError?: boolean;
   } = {},
@@ -644,6 +645,13 @@ async function botSession(
     SUPABASE_URL: "https://database.test",
     SUPABASE_SECRET_KEY: "test-only-key",
     GOOGLE_SERVICE_ACCOUNT_JSON: options.credentials ?? "",
+    AI: {
+      run: async () => {
+        if (!options.aiDecision || options.aiDecision === "ERROR")
+          throw new Error("Workers AI unavailable");
+        return { response: options.aiDecision };
+      },
+    },
   };
   const fetchMock = vi.fn(
     async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -963,6 +971,34 @@ describe("Telegram webhook registration regression", () => {
       bot.close();
     }
   });
+  it("switches a ready account between Uzbek and Russian immediately", async () => {
+    const tg = 800015000;
+    const u = await ready();
+    await q(
+      "update users set telegram_id=$2,locale='en',language_selected=true where id=$1",
+      [u.id, tg],
+    );
+    const bot = await botSession(tg);
+    try {
+      await bot.send("m:settings", true);
+      await bot.send("m:language", true);
+      expect((await bot.send("lang:uz", true))?.text).toContain("Tanishing");
+      expect(
+        (await q("select locale from users where id=$1", [u.id]))[0]?.locale,
+      ).toBe("uz");
+      expect((await bot.send("/start"))?.text).toContain("Tanishing");
+
+      await bot.send("m:settings", true);
+      await bot.send("m:language", true);
+      expect((await bot.send("lang:ru", true))?.text).toContain("Найдите");
+      expect(
+        (await q("select locale from users where id=$1", [u.id]))[0]?.locale,
+      ).toBe("ru");
+    } finally {
+      bot.close();
+    }
+  });
+
   it("denies an underage DOB in the real message handler", async () => {
     const bot = await botSession(800020000);
     try {
@@ -1054,7 +1090,7 @@ describe("real photo upload handler regression", () => {
         ).toHaveLength(0);
         expect(bot.stored.size).toBe(0);
         expect(log.mock.calls.flat().join(" ")).toContain(stage);
-        if (stage === "CONFIGURATION" || stage === "TELEGRAM_FILE") {
+        if (stage === "TELEGRAM_FILE") {
           expect((await q("select used from usage_quotas"))[0]?.used).toBe(
             before,
           );
@@ -1068,6 +1104,32 @@ describe("real photo upload handler regression", () => {
       }
     },
   );
+  it("accepts a safe photo through Workers AI when Google credentials are absent", async () => {
+    const tg = 810005000;
+    const u = await uploadAccount(tg);
+    const bot = await botSession(tg, {
+      credentials: "",
+      aiDecision: "SAFE",
+    });
+    try {
+      await bot.send(`replace:${u.ph}`, true);
+      expect((await bot.send(photo))?.text).toContain("Photo added");
+      expect(
+        (
+          await q(
+            "select count(*)::int n from photos where user_id=$1 and status='APPROVED'",
+            [u.id],
+          )
+        )[0]?.n,
+      ).toBe(1);
+      expect(
+        bot.externalCalls.some((x) => x.includes("googleapis.com")),
+      ).toBe(false);
+    } finally {
+      bot.close();
+    }
+  });
+
   it("rejects unsafe replacement and atomically accepts a later safe replacement through Telegram", async () => {
     const tg = 810010000;
     const u = await uploadAccount(tg);
