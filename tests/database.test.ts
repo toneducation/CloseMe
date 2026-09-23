@@ -1044,6 +1044,70 @@ describe("Telegram webhook registration regression", () => {
   });
 });
 
+describe("Telegram social menu regression", () => {
+  it("makes Nearby, Likes, Matches, Chats, Direct Message and Instagram useful end to end", async () => {
+    const tg = 809900000;
+    const a = await ready();
+    const b = await ready();
+    await q(
+      "update users set telegram_id=$2,locale='en',language_selected=true where id=$1",
+      [a.id, tg],
+    );
+    await q(
+      "update photos set status='REMOVED',primary_photo=false where user_id in ($1,$2)",
+      [a.id, b.id],
+    );
+    await call("set_instagram", [b.id, "closeme.friend"]);
+    await q(
+      "insert into location_preferences(user_id,lat_cell,lon_cell) values($1,41.30,69.25),($2,41.31,69.26) on conflict(user_id) do update set lat_cell=excluded.lat_cell,lon_cell=excluded.lon_cell",
+      [a.id, b.id],
+    );
+    const bName = (
+      await q("select canonical from usernames where owner_id=$1", [b.id])
+    )[0]?.canonical as string;
+
+    const bot = await botSession(tg);
+    try {
+      const near = await bot.send("m:near", true);
+      expect(near?.text).toContain(`@${bName}`);
+      expect(near?.text).toContain("@closeme.friend");
+
+      await call("social_action", [
+        b.id,
+        "like",
+        a.id,
+        "",
+        "incoming-like",
+        "{}",
+      ]);
+      const likes = await bot.send("m:likes", true);
+      expect(JSON.stringify(likes?.reply_markup)).toContain(bName);
+
+      await bot.send(`like:${b.id}`, true);
+      const matches = await bot.send("m:matches", true);
+      expect(JSON.stringify(matches?.reply_markup)).toContain(bName);
+
+      const chats = await bot.send("m:messages", true);
+      expect(JSON.stringify(chats?.reply_markup)).toContain(bName);
+
+      await bot.send(`compose:${b.id}`, true);
+      expect((await bot.send("Hello from CloseMe"))?.text).toContain(
+        "Message sent",
+      );
+      expect(
+        (
+          await q(
+            "select count(*)::int n from messages where sender=$1 and body='Hello from CloseMe'",
+            [a.id],
+          )
+        )[0]?.n,
+      ).toBe(1);
+    } finally {
+      bot.close();
+    }
+  });
+});
+
 describe("real photo upload handler regression", () => {
   let credentials: string;
   beforeAll(() => {
