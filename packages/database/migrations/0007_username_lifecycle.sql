@@ -8,7 +8,7 @@ begin
  perform pg_advisory_xact_lock(810021);
  perform 1 from users where id in (p_sender,p_recipient) order by id for update;
  if (select count(*) from users where id in (p_sender,p_recipient) and status='ACTIVE' and phone_verified_at is not null and birth_date is not null)<>2 then raise exception 'ACCOUNT_UNAVAILABLE'; end if;
- if exists(select 1 from username_history h where h.action in ('CHANGE','TRANSFER') and h.created_at>now()-interval '7 days' and (h.from_user in (p_sender,p_recipient) or h.to_user in (p_sender,p_recipient))) then raise exception 'COOLDOWN'; end if;
+ if exists(select 1 from username_history hist where hist.action in ('CHANGE','TRANSFER') and hist.created_at>now()-interval '7 days' and (hist.from_user in (p_sender,p_recipient) or hist.to_user in (p_sender,p_recipient))) then raise exception 'COOLDOWN'; end if;
  select * into h from usernames where owner_id=p_sender and status='ASSIGNED' for update;
  if not found then raise exception 'NO_USERNAME'; end if;
  if h.premium then raise exception 'PREMIUM_ADMIN_ONLY'; end if;
@@ -28,7 +28,7 @@ begin
  if p_actor not in (tr.sender_id,tr.recipient_id) then raise exception 'NOT_PARTICIPANT'; end if;
  perform 1 from users where id in (tr.sender_id,tr.recipient_id) order by id for update;
  if (select count(*) from users where id in (tr.sender_id,tr.recipient_id) and status='ACTIVE' and phone_verified_at is not null)<>2 then raise exception 'ACCOUNT_UNAVAILABLE'; end if;
- if exists(select 1 from username_history h where h.action in ('CHANGE','TRANSFER') and h.created_at>now()-interval '7 days' and (h.from_user in (tr.sender_id,tr.recipient_id) or h.to_user in (tr.sender_id,tr.recipient_id))) then raise exception 'COOLDOWN'; end if;
+ if exists(select 1 from username_history hist where hist.action in ('CHANGE','TRANSFER') and hist.created_at>now()-interval '7 days' and (hist.from_user in (tr.sender_id,tr.recipient_id) or hist.to_user in (tr.sender_id,tr.recipient_id))) then raise exception 'COOLDOWN'; end if;
  perform pg_advisory_xact_lock(hashtextextended(tr.canonical,0));
  if not exists(select 1 from usernames where canonical=tr.canonical and owner_id=tr.sender_id and status='ASSIGNED' and not premium) then raise exception 'OWNER_CHANGED'; end if;
  if p_actor=tr.sender_id and tr.state='DRAFT' then
