@@ -852,7 +852,7 @@ describe("Telegram webhook registration regression", () => {
     const tg = 800010000;
     const bot = await botSession(tg);
     try {
-      expect((await bot.send("/start"))?.text).toContain("English");
+      expect((await bot.send("/start"))?.text).toContain("Choose your language");
       await bot.send("lang:en", true);
       const { t } = await import("../packages/shared/src/i18n");
       await bot.send(t("en", "adult"));
