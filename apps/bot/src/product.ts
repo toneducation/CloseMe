@@ -163,13 +163,22 @@ async function workersAiPhotoCheck(
         },
         {
           role: "user",
-          content:
-            "Classify this image. UNSAFE means nudity, exposed genitals or breasts, sexual or strongly racy content, graphic violence, gore, or an image that is unsafe for a general adult relationship profile. If uncertain, choose UNSAFE.",
+          content: [
+            {
+              type: "text",
+              text: "Classify this image. UNSAFE means nudity, exposed genitals or breasts, sexual or strongly racy content, graphic violence, gore, or an image that is unsafe for a general adult relationship profile. If uncertain, choose UNSAFE.",
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/jpeg;base64,${base64(bytes)}`,
+              },
+            },
+          ],
         },
       ],
-      image: `data:image/jpeg;base64,${base64(bytes)}`,
       temperature: 0,
-      max_tokens: 8,
+      max_completion_tokens: 8,
       chat_template_kwargs: { enable_thinking: false },
     });
     const answer = aiText(response).trim().toUpperCase();
