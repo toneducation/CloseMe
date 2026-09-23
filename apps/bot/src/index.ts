@@ -75,7 +75,12 @@ export function validSecret(
 }
 export const app = new Hono<{ Bindings: Env }>();
 app.get("/health", (c) =>
-  c.json({ service: "closeme", phase: "relationship-platform", ok: true }),
+  c.json({
+    service: "closeme",
+    phase: "relationship-platform",
+    version: "2026-09-23-social-core-v1",
+    ok: true,
+  }),
 );
 app.post("/telegram/webhook", async (c) => {
   if (

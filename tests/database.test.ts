@@ -58,6 +58,7 @@ beforeAll(async () => {
     "0005_optional_profile_photo.sql",
     "0006_photo_error_classification.sql",
     "0007_username_lifecycle.sql",
+    "0008_social_profile_polish.sql",
   ]) {
     await exec(
       readFileSync(
@@ -984,21 +985,38 @@ describe("Telegram webhook registration regression", () => {
     try {
       await bot.send("m:settings", true);
       await bot.send("m:language", true);
-      expect((await bot.send("lang:uz", true))?.text).toContain("Tanishing");
+      expect((await bot.send("lang:uz", true))?.text).toContain(
+        "Kerakli bo‘lim",
+      );
       expect(
         (await q("select locale from users where id=$1", [u.id]))[0]?.locale,
       ).toBe("uz");
-      expect((await bot.send("/start"))?.text).toContain("Tanishing");
+      expect((await bot.send("/start"))?.text).toContain("Kerakli bo‘lim");
 
       await bot.send("m:settings", true);
       await bot.send("m:language", true);
-      expect((await bot.send("lang:ru", true))?.text).toContain("Найдите");
+      expect((await bot.send("lang:ru", true))?.text).toContain(
+        "Выберите раздел",
+      );
       expect(
         (await q("select locale from users where id=$1", [u.id]))[0]?.locale,
       ).toBe("ru");
     } finally {
       bot.close();
     }
+  });
+
+  it("stores Instagram and exposes it in profile cards", async () => {
+    const u = await ready();
+    expect(await call("set_instagram", [u.id, "Aziz.Arch"])).toBe("aziz.arch");
+    const card = (await call("card", [u.id, u.id])) as {
+      instagram_username: string | null;
+    };
+    expect(card.instagram_username).toBe("aziz.arch");
+    await expect(call("set_instagram", [u.id, "bad..name"])).rejects.toThrow(
+      "INVALID_INSTAGRAM",
+    );
+    expect(await call("set_instagram", [u.id, ""])).toBe(null);
   });
 
   it("denies an underage DOB in the real message handler", async () => {
@@ -1027,6 +1045,70 @@ describe("Telegram webhook registration regression", () => {
     expect(
       ((await call("card", [u.id, u.id])) as { photo: unknown }).photo,
     ).toBe(null);
+  });
+});
+
+describe("Telegram social menu regression", () => {
+  it("makes Nearby, Likes, Matches, Chats, Direct Message and Instagram useful end to end", async () => {
+    const tg = 809900000;
+    const a = await ready();
+    const b = await ready();
+    await q(
+      "update users set telegram_id=$2,locale='en',language_selected=true where id=$1",
+      [a.id, tg],
+    );
+    await q(
+      "update photos set status='REMOVED',primary_photo=false where user_id in ($1,$2)",
+      [a.id, b.id],
+    );
+    await call("set_instagram", [b.id, "closeme.friend"]);
+    await q(
+      "insert into location_preferences(user_id,lat_cell,lon_cell) values($1,41.30,69.25),($2,41.31,69.26) on conflict(user_id) do update set lat_cell=excluded.lat_cell,lon_cell=excluded.lon_cell",
+      [a.id, b.id],
+    );
+    const bName = (
+      await q("select canonical from usernames where owner_id=$1", [b.id])
+    )[0]?.canonical as string;
+
+    const bot = await botSession(tg);
+    try {
+      const near = await bot.send("m:near", true);
+      expect(near?.text).toContain(`@${bName}`);
+      expect(near?.text).toContain("@closeme.friend");
+
+      await call("social_action", [
+        b.id,
+        "like",
+        a.id,
+        "",
+        "incoming-like",
+        "{}",
+      ]);
+      const likes = await bot.send("m:likes", true);
+      expect(JSON.stringify(likes?.reply_markup)).toContain(bName);
+
+      await bot.send(`like:${b.id}`, true);
+      const matches = await bot.send("m:matches", true);
+      expect(JSON.stringify(matches?.reply_markup)).toContain(bName);
+
+      const chats = await bot.send("m:messages", true);
+      expect(JSON.stringify(chats?.reply_markup)).toContain(bName);
+
+      await bot.send(`compose:${b.id}`, true);
+      expect((await bot.send("Hello from CloseMe"))?.text).toContain(
+        "Message sent",
+      );
+      expect(
+        (
+          await q(
+            "select count(*)::int n from messages where sender=$1 and body='Hello from CloseMe'",
+            [a.id],
+          )
+        )[0]?.n,
+      ).toBe(1);
+    } finally {
+      bot.close();
+    }
   });
 });
 
