@@ -1,16 +1,16 @@
 import type { Language } from "./index";
 const rows = {
   menu: [
-    "Choose a connection.",
-    "Tanishing va muloqot qiling.",
-    "Найдите значимую связь.",
+    "✨ CloseMe · Choose what you want to do",
+    "✨ CloseMe · Kerakli bo‘limni tanlang",
+    "✨ CloseMe · Выберите раздел",
   ],
-  find: ["❤️ Find People", "❤️ Insonlarni topish", "❤️ Найти людей"],
-  near: ["📍 People Near Me", "📍 Yaqindagilar", "📍 Люди рядом"],
-  search: ["🔎 Search Username", "🔎 Username qidirish", "🔎 Поиск имени"],
-  likes: ["💌 Likes", "💌 Yoqtirishlar", "💌 Симпатии"],
-  matches: ["💞 Matches", "💞 Mosliklar", "💞 Совпадения"],
-  messages: ["💬 Messages", "💬 Xabarlar", "💬 Сообщения"],
+  find: ["💫 Discover", "💫 Tanishing", "💫 Знакомства"],
+  near: ["📍 Nearby", "📍 Yaqindagilar", "📍 Рядом"],
+  search: ["🔎 Search", "🔎 Qidirish", "🔎 Поиск"],
+  likes: ["💗 Likes", "💗 Yoqtirishlar", "💗 Симпатии"],
+  matches: ["🤝 Matches", "🤝 Mosliklar", "🤝 Совпадения"],
+  messages: ["💬 Chats", "💬 Xabarlar", "💬 Чаты"],
   profile: ["👤 My Profile", "👤 Profilim", "👤 Мой профиль"],
   settings: ["⚙️ Settings", "⚙️ Sozlamalar", "⚙️ Настройки"],
   name: [
@@ -120,8 +120,71 @@ const rows = {
   primary: ["Make primary", "Asosiy qilish", "Сделать главным"],
   remove: ["Delete photo", "Rasmni o‘chirish", "Удалить фото"],
   edit: ["Edit profile", "Profilni tahrirlash", "Изменить профиль"],
+  instagram: ["📸 Instagram", "📸 Instagram", "📸 Instagram"],
+  link_instagram: [
+    "🔗 Link Instagram",
+    "🔗 Instagram ulash",
+    "🔗 Подключить Instagram",
+  ],
+  unlink_instagram: [
+    "Remove Instagram",
+    "Instagramni uzish",
+    "Удалить Instagram",
+  ],
+  instagram_prompt: [
+    "Send your Instagram username (for example @closeme) or an instagram.com profile link. CloseMe will show it on your profile.",
+    "Instagram username’ingizni (masalan @closeme) yoki instagram.com profil havolasini yuboring. CloseMe uni profilingizda ko‘rsatadi.",
+    "Отправьте имя Instagram (например @closeme) или ссылку instagram.com на профиль. CloseMe покажет её в вашем профиле.",
+  ],
+  instagram_invalid: [
+    "That Instagram username is not valid. Use up to 30 letters, numbers, dots or underscores.",
+    "Instagram username noto‘g‘ri. 30 tagacha harf, raqam, nuqta yoki pastki chiziq ishlating.",
+    "Некорректное имя Instagram. Используйте до 30 букв, цифр, точек или подчёркиваний.",
+  ],
+  instagram_saved: [
+    "✅ Instagram linked: @{username}",
+    "✅ Instagram ulandi: @{username}",
+    "✅ Instagram подключён: @{username}",
+  ],
+  instagram_removed: [
+    "Instagram removed from your CloseMe profile.",
+    "Instagram profilingizdan olib tashlandi.",
+    "Instagram удалён из профиля CloseMe.",
+  ],
+  no_likes: [
+    "No likes yet. When someone likes you, they’ll appear here.",
+    "Hozircha yoqtirishlar yo‘q. Kimdir sizni yoqtirsa shu yerda chiqadi.",
+    "Пока нет симпатий. Когда вы кому-то понравитесь, они появятся здесь.",
+  ],
+  no_matches: [
+    "No matches yet. Discover people and like someone to create a match.",
+    "Hozircha moslik yo‘q. Insonlarni ko‘rib, kimnidir yoqtiring.",
+    "Пока нет совпадений. Просматривайте людей и ставьте симпатии.",
+  ],
+  no_messages: [
+    "No chats yet. Open a profile and tap Direct Message to send a private request.",
+    "Hozircha chat yo‘q. Profilni ochib “Xabar yuborish”ni bosing.",
+    "Пока нет чатов. Откройте профиль и нажмите «Написать».",
+  ],
+  no_requests: [
+    "No message requests right now.",
+    "Hozircha xabar so‘rovlari yo‘q.",
+    "Сейчас нет запросов сообщений.",
+  ],
+  no_nearby: [
+    "No nearby profiles match your filters yet. You can widen the radius in Settings.",
+    "Hozircha yaqin atrofda filtrlaringizga mos profil yo‘q. Sozlamalarda radiusni kattalashtirishingiz mumkin.",
+    "Пока рядом нет профилей по вашим фильтрам. Можно увеличить радиус в настройках.",
+  ],
+  no_discover: [
+    "No new profiles are available yet. Your account is working — try again when more people join.",
+    "Hozircha yangi profillar yo‘q. Hisobingiz ishlayapti — yangi odamlar qo‘shilganda qayta urinib ko‘ring.",
+    "Пока новых профилей нет. Ваш аккаунт работает — попробуйте позже, когда появятся новые люди.",
+  ],
+  retry: ["↻ Refresh", "↻ Yangilash", "↻ Обновить"],
+
   like: ["❤️ Like", "❤️ Yoqtirish", "❤️ Нравится"],
-  message: ["💬 Message", "💬 Xabar", "💬 Сообщение"],
+  message: ["💬 Direct Message", "💬 Xabar yuborish", "💬 Написать"],
   super: ["⭐ Super Like", "⭐ Super yoqtirish", "⭐ Суперсимпатия"],
   skip: ["❌ Skip", "❌ O‘tkazish", "❌ Пропустить"],
   report: ["🚩 Report", "🚩 Shikoyat", "🚩 Пожаловаться"],
