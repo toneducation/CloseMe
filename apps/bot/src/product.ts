@@ -97,8 +97,7 @@ export function menu(l: Language) {
 
 type PremiumEmoji = { id: string; alt: string };
 let premiumEmojiCache:
-  | { expiresAt: number; byAlt: Map<string, PremiumEmoji> }
-  | undefined;
+  { expiresAt: number; byAlt: Map<string, PremiumEmoji> } | undefined;
 let premiumEmojiSendingAllowed = true;
 const premiumEmojiSets = ["fluencynew", "FinanceEmoji"] as const;
 
@@ -141,10 +140,7 @@ function animatedEmoji(
 }
 
 function withoutAnimatedEmoji(html: string) {
-  return html.replace(
-    /<tg-emoji emoji-id="[^"]+">([^<]+)<\/tg-emoji>/g,
-    "$1",
-  );
+  return html.replace(/<tg-emoji emoji-id="[^"]+">([^<]+)<\/tg-emoji>/g, "$1");
 }
 
 async function replyPremium(
@@ -168,10 +164,7 @@ async function replyPremium(
   }
 }
 
-function premiumMenuText(
-  l: Language,
-  e: (emoji: string) => string,
-): string {
+function premiumMenuText(l: Language, e: (emoji: string) => string): string {
   if (l === "uz")
     return `${e("✨")} <b>CloseMe</b> ga xush kelibsiz
 
