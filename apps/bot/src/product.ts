@@ -119,7 +119,9 @@ async function premiumEmojiMap(ctx: Context) {
         if (!byAlt.has(key))
           byAlt.set(key, { id: sticker.custom_emoji_id, alt: sticker.emoji });
       }
-    } catch {}
+    } catch {
+      continue;
+    }
   }
   premiumEmojiCache = {
     expiresAt: Date.now() + 6 * 60 * 60_000,
