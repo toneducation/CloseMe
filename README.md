@@ -42,7 +42,7 @@ Since your Supabase project is ready:
 3. Open **SQL Editor → New query**.
 4. On GitHub, open `packages/database/migrations/0001_identity.sql`. If the identity foundation was already applied, **do not run it again**. Existing `users`, `usernames` and `admin_users` tables identify that foundation; check your migration records if uncertain. Do not drop these tables.
 5. For a fresh project only, run `0001_identity.sql` once.
-6. Run `0002_relationships.sql`, then `0003_administration.sql`, then `0004_storage.sql`, then `0005_optional_profile_photo.sql`, each once, in that order. Each file uses a transaction. If a file reports an error, stop and retain the error message without secrets; do not continue or reset the database.
+6. Run `0002_relationships.sql`, then `0003_administration.sql`, then `0004_storage.sql`, then `0005_optional_profile_photo.sql`, then `0006_photo_error_classification.sql`, each once, in that order. Each file uses a transaction. If a file reports an error, stop and retain the error message without secrets; do not continue or reset the database.
 7. In **Storage**, confirm `profile-photos` exists and is **private**. Do not add public policies. It permits JPEGs up to 5 MB.
 8. In **Authentication → Providers / Email**, disable public signup. Enable email/password for deliberately created staff only. Disable anonymous signup.
 9. In Auth settings, enable TOTP MFA, choose a short JWT lifetime suitable for staff, and keep Auth rate limits enabled. No SMS provider is needed.
@@ -210,3 +210,11 @@ CI runs these against PostgreSQL 17. Local tests default to disposable PGlite. T
 Apply only `0005_optional_profile_photo.sql` if migrations 0001–0004 are already installed. It preserves data, completes previously saved profiles waiting for a photo, and keeps approved-only image selection and existing function permissions. Profiles without photos can register, search and connect using text cards. The last photo can be removed without resetting registration.
 
 Bot deployments preserve dashboard runtime variables (`keep_vars = true`). Required variable names remain in the configuration table above. Validation includes real Hono/grammY webhook handlers and PostgreSQL RPCs with simulated Telegram and Supabase HTTP boundaries; it is not a claim of live Telegram delivery or inspection of the hosted database.
+
+## Bot repair phase 2 — photo diagnostics
+
+After migration 0005, apply `0006_photo_error_classification.sql` once. Infrastructure errors no longer create member abuse flags. Existing risk history is preserved. Missing/malformed Google credentials or failed Telegram downloads do not consume moderation quota. Provider errors and Storage failures show a temporary-unavailability message; only an UNSAFE decision rejects the image as inappropriate. The replacement button retains the original photo target.
+
+Private Worker logs emit only `photo_upload_failed`, an internal photo ID and a stage: `CONFIGURATION` (Google JSON/key or quota setting), `TELEGRAM_FILE` (download/format/size), `AUTH` (Google OAuth), `VISION` (API access, timeout or unusable result), `STORAGE` (bucket/upload) or `DATABASE` (finalization). No provider response, credential, file URL, image bytes or phone number is logged. To inspect these diagnostics, enable Worker logs temporarily in Cloudflare's Observability settings, reproduce one upload, and inspect the stage. Turn logging back off if not needed.
+
+For `CONFIGURATION`, follow Google setup in section 2 and store the entire service-account JSON as **GOOGLE_SERVICE_ACCOUNT_JSON**, a bot Worker **Secret**. For `STORAGE`, confirm Supabase Storage has a **private** `profile-photos` bucket, JPEG allowed, 5 MB limit; migration 0004 creates it. Do not make it public or add browser upload policies. For `AUTH`/`VISION`, verify the service account, enabled Vision API and quota/billing configuration in Google; do not enable paid overflow. A successful simulated test does not verify these hosted settings.

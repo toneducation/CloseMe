@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { randomUUID, generateKeyPairSync } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 import { app, type Env } from "../apps/bot/src/index";
@@ -56,6 +56,7 @@ beforeAll(async () => {
     "0002_relationships.sql",
     "0003_administration.sql",
     "0005_optional_profile_photo.sql",
+    "0006_photo_error_classification.sql",
   ]) {
     await exec(
       readFileSync(
@@ -601,7 +602,17 @@ describe("relationship safety transactions", () => {
 
 // Exercise the real Hono → grammY → Supabase client → PostgreSQL path.
 // Only network boundaries are simulated; application handlers and RPCs are real.
-async function botSession(telegram: number) {
+async function botSession(
+  telegram: number,
+  options: {
+    credentials?: string;
+    decision?: "SAFE" | "UNSAFE" | "ERROR";
+    storageError?: boolean;
+    fileError?: boolean;
+  } = {},
+) {
+  const stored = new Map<string, boolean>();
+  const externalCalls: string[] = [];
   const replies: Record<string, unknown>[] = [];
   const pending: Promise<unknown>[] = [];
   const env: Env = {
@@ -612,13 +623,51 @@ async function botSession(telegram: number) {
     PHONE_HMAC_SECRET: "h".repeat(64),
     SUPABASE_URL: "https://database.test",
     SUPABASE_SECRET_KEY: "test-only-key",
-    GOOGLE_SERVICE_ACCOUNT_JSON: "",
+    GOOGLE_SERVICE_ACCOUNT_JSON: options.credentials ?? "",
   };
   const fetchMock = vi.fn(
     async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
-      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      const body =
+        typeof init?.body === "string" && init.body.startsWith("{")
+          ? JSON.parse(init.body)
+          : {};
+      externalCalls.push(url.hostname + url.pathname);
+      if (url.hostname === "oauth2.googleapis.com")
+        return Response.json({ access_token: "test-access-token" });
+      if (url.hostname === "vision.googleapis.com")
+        return options.decision === "ERROR"
+          ? new Response("unavailable", { status: 503 })
+          : Response.json({
+              responses: [
+                {
+                  safeSearchAnnotation: {
+                    adult:
+                      options.decision === "UNSAFE" ? "LIKELY" : "UNLIKELY",
+                    racy: "UNLIKELY",
+                    violence: "UNLIKELY",
+                  },
+                },
+              ],
+            });
       if (url.hostname === "api.telegram.org") {
+        if (url.pathname.includes("/file/bot"))
+          return new Response(new Uint8Array([255, 216, 255, 217]));
+        if (url.pathname.endsWith("/getFile"))
+          return options.fileError
+            ? Response.json({
+                ok: false,
+                error_code: 400,
+                description: "invalid file",
+              })
+            : Response.json({
+                ok: true,
+                result: {
+                  file_id: "test",
+                  file_unique_id: "test",
+                  file_path: "photos/test.jpg",
+                },
+              });
         if (url.pathname.endsWith("/sendMessage")) replies.push(body);
         return Response.json({
           ok: true,
@@ -632,6 +681,21 @@ async function botSession(telegram: number) {
       }
       if (url.hostname !== "database.test")
         throw new Error("Unexpected network request");
+      if (url.pathname.startsWith("/storage/v1/object/profile-photos")) {
+        if (options.storageError)
+          return Response.json(
+            {
+              statusCode: "404",
+              error: "Not found",
+              message: "Bucket not found",
+            },
+            { status: 404 },
+          );
+        if (init?.method === "DELETE") {
+          for (const path of body.prefixes ?? []) stored.delete(path);
+        } else stored.set(url.pathname.split("/profile-photos/")[1]!, true);
+        return Response.json({ Key: "ok" });
+      }
       try {
         if (url.pathname.startsWith("/rest/v1/rpc/")) {
           const name = url.pathname.split("/").at(-1)!;
@@ -746,7 +810,13 @@ async function botSession(telegram: number) {
     expect(response.status).toBe(200);
     return replies.at(-1);
   }
-  return { send, replies, close: () => vi.unstubAllGlobals() };
+  return {
+    send,
+    replies,
+    stored,
+    externalCalls,
+    close: () => vi.unstubAllGlobals(),
+  };
 }
 
 describe("Telegram webhook registration regression", () => {
@@ -867,5 +937,149 @@ describe("Telegram webhook registration regression", () => {
     expect(
       ((await call("card", [u.id, u.id])) as { photo: unknown }).photo,
     ).toBe(null);
+  });
+});
+
+describe("real photo upload handler regression", () => {
+  let credentials: string;
+  beforeAll(() => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    credentials = JSON.stringify({
+      client_email: "test@example.iam.gserviceaccount.com",
+      project_id: "closeme-test",
+      private_key: privateKey.export({ type: "pkcs8", format: "pem" }),
+    });
+  });
+  async function uploadAccount(tg: number) {
+    const u = await ready();
+    await q(
+      "update users set telegram_id=$2,locale='en',language_selected=true where id=$1",
+      [u.id, tg],
+    );
+    return u;
+  }
+  const photo = {
+    photo: [
+      {
+        file_id: "test",
+        file_unique_id: "test",
+        width: 100,
+        height: 100,
+        file_size: 4,
+      },
+    ],
+  };
+  it.each(["CONFIGURATION", "TELEGRAM_FILE", "VISION", "STORAGE"])(
+    "reports %s outages accurately and preserves the old photo",
+    async (stage) => {
+      const tg =
+        810000000 +
+        ["CONFIGURATION", "TELEGRAM_FILE", "VISION", "STORAGE"].indexOf(stage) *
+          1000;
+      const u = await uploadAccount(tg);
+      const before = (await q("select used from usage_quotas"))[0]?.used;
+      const options = {
+        credentials: stage === "CONFIGURATION" ? "{}" : credentials,
+        fileError: stage === "TELEGRAM_FILE",
+        decision: stage === "VISION" ? ("ERROR" as const) : ("SAFE" as const),
+        storageError: stage === "STORAGE",
+      };
+      const bot = await botSession(tg, options);
+      const log = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await bot.send(`replace:${u.ph}`, true);
+        expect((await bot.send(photo))?.text).toContain(
+          "temporarily unavailable",
+        );
+        const rows = await q(
+          "select id,status from photos where user_id=$1 order by created_at",
+          [u.id],
+        );
+        expect(rows.find((r) => r.id === u.ph)?.status).toBe("APPROVED");
+        expect(rows.filter((r) => r.status === "ERROR")).toHaveLength(1);
+        expect(
+          await q("select * from risk_flags where user_id=$1", [u.id]),
+        ).toHaveLength(0);
+        expect(bot.stored.size).toBe(0);
+        expect(log.mock.calls.flat().join(" ")).toContain(stage);
+        if (stage === "CONFIGURATION" || stage === "TELEGRAM_FILE") {
+          expect((await q("select used from usage_quotas"))[0]?.used).toBe(
+            before,
+          );
+          expect(
+            bot.externalCalls.some((x) => x.includes("googleapis.com")),
+          ).toBe(false);
+        }
+      } finally {
+        bot.close();
+        log.mockRestore();
+      }
+    },
+  );
+  it("rejects unsafe replacement and atomically accepts a later safe replacement through Telegram", async () => {
+    const tg = 810010000;
+    const u = await uploadAccount(tg);
+    const options = { credentials, decision: "UNSAFE" as "SAFE" | "UNSAFE" };
+    const bot = await botSession(tg, options);
+    try {
+      await bot.send(`replace:${u.ph}`, true);
+      expect((await bot.send(photo))?.text).toContain("can't be used");
+      expect(bot.stored.size).toBe(0);
+      expect(
+        (
+          await q("select id from photos where user_id=$1 and primary_photo", [
+            u.id,
+          ])
+        )[0]?.id,
+      ).toBe(u.ph);
+      const retry = bot.replies.at(-1)?.reply_markup as {
+        inline_keyboard: { callback_data: string }[][];
+      };
+      expect(retry.inline_keyboard[0]![0]!.callback_data).toBe(
+        `replace:${u.ph}`,
+      );
+      await bot.send(retry.inline_keyboard[0]![0]!.callback_data, true);
+      options.decision = "SAFE";
+      expect((await bot.send(photo))?.text).toContain("Photo added");
+      const primary = (
+        await q(
+          "select id,storage_path from photos where user_id=$1 and primary_photo and status='APPROVED'",
+          [u.id],
+        )
+      )[0]!;
+      expect(primary.id).not.toBe(u.ph);
+      expect(bot.stored.has(String(primary.storage_path))).toBe(true);
+      expect(
+        (await q("select status from photos where id=$1", [u.ph]))[0]?.status,
+      ).toBe("REMOVED");
+    } finally {
+      bot.close();
+    }
+  });
+  it("does not call Google or replace the photo when monthly quota is exhausted", async () => {
+    const tg = 810020000;
+    const u = await uploadAccount(tg);
+    await q("update usage_quotas set used=950");
+    const bot = await botSession(tg, { credentials });
+    try {
+      await bot.send(`replace:${u.ph}`, true);
+      expect((await bot.send(photo))?.text).toContain(
+        "temporarily unavailable",
+      );
+      expect(bot.externalCalls.some((x) => x.includes("googleapis.com"))).toBe(
+        false,
+      );
+      expect(bot.stored.size).toBe(0);
+      expect(
+        (
+          await q("select id from photos where user_id=$1 and primary_photo", [
+            u.id,
+          ])
+        )[0]?.id,
+      ).toBe(u.ph);
+    } finally {
+      bot.close();
+      await q("update usage_quotas set used=0");
+    }
   });
 });

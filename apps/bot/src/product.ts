@@ -157,6 +157,15 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
     }),
   );
   let path: string | undefined;
+  let stage = "CONFIGURATION";
+  const diagnostic = (code: string) =>
+    console.warn(
+      JSON.stringify({
+        event: "photo_upload_failed",
+        photo_id: pid,
+        stage: code,
+      }),
+    );
   try {
     const lim = z.coerce
       .number()
@@ -164,17 +173,13 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
       .min(1)
       .max(950)
       .parse(env.PHOTO_MODERATION_MONTHLY_LIMIT ?? "950");
-    if (
-      !(await rpc(db, "reserve_photo_quota", { p_photo: pid, p_limit: lim }))
-    ) {
-      await rpc(db, "photo_finish", {
-        p_user: u.id,
-        p_photo: pid,
-        p_decision: "ERROR",
-      });
-      await ctx.reply(p(l, "photo_unavailable"));
-      return;
-    }
+    const provider = new GoogleSafeSearchProvider(
+      env.GOOGLE_SERVICE_ACCOUNT_JSON,
+      fetch,
+      diagnostic,
+    );
+    await provider.prepare();
+    stage = "TELEGRAM_FILE";
     if ((photo.file_size ?? 0) > 5 * 1024 * 1024) throw new Error("SIZE");
     const f = await ctx.api.getFile(photo.file_id);
     if (
@@ -190,16 +195,27 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
     if (!response.ok) throw new Error("FETCH");
     const bytes = await boundedBody(response, 5 * 1024 * 1024);
     if (bytes[0] !== 255 || bytes[1] !== 216) throw new Error("JPEG");
-    const decision = await new GoogleSafeSearchProvider(
-      env.GOOGLE_SERVICE_ACCOUNT_JSON,
-    ).check(bytes);
+    if (
+      !(await rpc(db, "reserve_photo_quota", { p_photo: pid, p_limit: lim }))
+    ) {
+      await rpc(db, "photo_finish", {
+        p_user: u.id,
+        p_photo: pid,
+        p_decision: "ERROR",
+      });
+      await ctx.reply(p(l, "photo_unavailable"));
+      return;
+    }
+    const decision = await provider.check(bytes);
     if (decision === "SAFE") {
+      stage = "STORAGE";
       path = `${u.id}/${pid}.jpg`;
       const { error } = await db.storage
         .from("profile-photos")
         .upload(path, bytes, { contentType: "image/jpeg", upsert: false });
       if (error) throw new Error("STORAGE");
     }
+    stage = "DATABASE";
     const approved = await rpc(db, "photo_finish", {
       p_user: u.id,
       p_photo: pid,
@@ -208,14 +224,28 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
     });
     if (!approved && path)
       await db.storage.from("profile-photos").remove([path]);
-    await ctx.reply(p(l, approved ? "photo_ok" : "photo_no"), {
-      reply_markup: approved
-        ? menu(l)
-        : new InlineKeyboard().text(p(l, "replace"), "m:upload"),
-    });
+    await ctx.reply(
+      p(
+        l,
+        approved
+          ? "photo_ok"
+          : decision === "UNSAFE"
+            ? "photo_no"
+            : "photo_unavailable",
+      ),
+      {
+        reply_markup: approved
+          ? menu(l)
+          : new InlineKeyboard().text(
+              p(l, "replace"),
+              u.flow.replace ? `replace:${u.flow.replace}` : "m:upload",
+            ),
+      },
+    );
     if (approved)
       await write(db.from("users").update({ flow: {} }).eq("id", u.id));
   } catch {
+    diagnostic(stage);
     if (path) {
       // A reply failure or ambiguous RPC response must never delete a committed photo.
       const { data: state, error: stateError } = await db
@@ -231,8 +261,11 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
       p_photo: pid,
       p_decision: "ERROR",
     });
-    await ctx.reply(p(l, "photo_no"), {
-      reply_markup: new InlineKeyboard().text(p(l, "replace"), "m:upload"),
+    await ctx.reply(p(l, "photo_unavailable"), {
+      reply_markup: new InlineKeyboard().text(
+        p(l, "replace"),
+        u.flow.replace ? `replace:${u.flow.replace}` : "m:upload",
+      ),
     });
   }
   // Delete only images already atomically removed from the active profile.

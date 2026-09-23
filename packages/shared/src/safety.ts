@@ -41,17 +41,32 @@ export const credentialSchema = z.object({
   private_key: z.string().min(100),
   project_id: z.string().regex(/^[a-z][a-z0-9-]{4,62}$/),
 });
+export type PhotoSafetyFailure = "CONFIGURATION" | "IMAGE" | "AUTH" | "VISION";
 export class GoogleSafeSearchProvider implements PhotoSafetyProvider {
+  private prepared?: {
+    credentials: z.infer<typeof credentialSchema>;
+    key: CryptoKey;
+  };
   constructor(
     private credentials: string,
     private request: typeof fetch = fetch,
+    private reportFailure: (stage: PhotoSafetyFailure) => void = () => {},
   ) {}
+  async prepare(): Promise<void> {
+    if (this.prepared) return;
+    const credentials = credentialSchema.parse(JSON.parse(this.credentials));
+    const key = await importPKCS8(credentials.private_key, "RS256");
+    this.prepared = { credentials, key };
+  }
   async check(image: Uint8Array): Promise<PhotoSafetyResult> {
+    let stage: PhotoSafetyFailure = "CONFIGURATION";
     try {
+      await this.prepare();
+      stage = "IMAGE";
       if (image.byteLength > 5 * 1024 * 1024 || image.byteLength < 4)
-        return "ERROR";
-      const c = credentialSchema.parse(JSON.parse(this.credentials));
-      const key = await importPKCS8(c.private_key, "RS256");
+        throw new Error("IMAGE");
+      const { credentials: c, key } = this.prepared!;
+      stage = "AUTH";
       const assertion = await new SignJWT({
         scope: "https://www.googleapis.com/auth/cloud-vision",
       })
@@ -73,10 +88,11 @@ export class GoogleSafeSearchProvider implements PhotoSafetyProvider {
           signal: AbortSignal.timeout(8000),
         },
       );
-      if (!tokenResponse.ok) return "ERROR";
+      if (!tokenResponse.ok) throw new Error("AUTH");
       const token = z
         .object({ access_token: z.string().min(10) })
         .parse(await tokenResponse.json());
+      stage = "VISION";
       let binary = "";
       for (let i = 0; i < image.length; i += 8192)
         binary += String.fromCharCode(...image.subarray(i, i + 8192));
@@ -101,8 +117,12 @@ export class GoogleSafeSearchProvider implements PhotoSafetyProvider {
           signal: AbortSignal.timeout(10000),
         },
       );
-      return response.ok ? normalizeSafeSearch(await response.json()) : "ERROR";
+      if (!response.ok) throw new Error("VISION");
+      const decision = normalizeSafeSearch(await response.json());
+      if (decision === "ERROR") throw new Error("VISION");
+      return decision;
     } catch {
+      this.reportFailure(stage);
       return "ERROR";
     }
   }
