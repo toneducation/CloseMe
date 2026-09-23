@@ -179,7 +179,7 @@ Bu yerda yangi insonlar bilan tanishishingiz va Telegram profilingizni oshkor qi
 ${e("📍")} <b>Yaqindagilar</b> — hududingizdagi profillarni toping
 ${e("💬")} <b>Xabarlar</b> — CloseMe ichida maxfiy suhbat</blockquote>
 
-<b>Quyidagi bo‘limlardan birini tanlang ↓</b>`;
+<b>Kerakli bo‘limni tanlang ↓</b>`;
   if (l === "ru")
     return `${e("✨")} Добро пожаловать в <b>CloseMe</b>
 
