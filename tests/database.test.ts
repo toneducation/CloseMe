@@ -928,7 +928,7 @@ describe("Telegram webhook registration regression", () => {
         )[0]?.canonical,
       ).toBe("flowaziz2");
       await bot.send("m:change_username", true);
-      expect(bot.replies.at(-1)?.text?.toLowerCase()).toContain("7");
+      expect(String(bot.replies.at(-1)?.text ?? "").toLowerCase()).toContain("7");
 
       await bot.send("m:profile", true);
       expect(bot.replies.at(-1)?.text).toContain("@flowaziz2");
