@@ -4,6 +4,22 @@ begin;
 alter table public.profiles
   add column if not exists instagram_username text;
 
+alter table public.photos
+  add column if not exists failure_stage text;
+
+alter table public.photos
+  drop constraint if exists photos_failure_stage_check;
+
+alter table public.photos
+  add constraint photos_failure_stage_check
+  check (
+    failure_stage is null
+    or failure_stage in (
+      'TELEGRAM_FILE','QUOTA','MODERATION','AI','CONFIGURATION','IMAGE',
+      'AUTH','VISION','STORAGE','DATABASE'
+    )
+  );
+
 alter table public.profiles
   drop constraint if exists profiles_instagram_username_check;
 
