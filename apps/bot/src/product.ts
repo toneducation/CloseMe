@@ -73,29 +73,30 @@ async function write(query: PromiseLike<{ error: unknown }>) {
 export function languageButtons() {
   return new InlineKeyboard()
     .text("🇬🇧 English", "lang:en")
+    .style("primary")
     .row()
     .text("🇺🇿 O‘zbekcha", "lang:uz")
+    .style("primary")
     .row()
-    .text("🇷🇺 Русский", "lang:ru");
+    .text("🇷🇺 Русский", "lang:ru")
+    .style("primary");
 }
 export function menu(l: Language) {
-  const k = new InlineKeyboard();
-  (
-    [
-      "find",
-      "near",
-      "search",
-      "likes",
-      "matches",
-      "messages",
-      "profile",
-      "settings",
-    ] as const
-  ).forEach((key, i) => {
-    k.text(p(l, key), `m:${key}`);
-    if (i % 2) k.row();
-  });
-  return k;
+  return new InlineKeyboard()
+    .text(p(l, "find"), "m:find")
+    .style("primary")
+    .text(p(l, "near"), "m:near")
+    .row()
+    .text(p(l, "search"), "m:search")
+    .text(p(l, "likes"), "m:likes")
+    .row()
+    .text(p(l, "matches"), "m:matches")
+    .style("success")
+    .text(p(l, "messages"), "m:messages")
+    .style("primary")
+    .row()
+    .text(p(l, "profile"), "m:profile")
+    .text(p(l, "settings"), "m:settings");
 }
 export async function showMenu(ctx: Context, l: Language) {
   await ctx.reply(p(l, "menu"), { reply_markup: menu(l) });
@@ -252,14 +253,19 @@ export async function showCard(
         .text(p(l, "super"), `super:${c.id}`)
         .text(p(l, "skip"), `skip:${c.id}`)
         .row();
+  k.row().copyText(`📋 @${c.username}`, `@${c.username}`);
   if (c.instagram_username) {
-    k.url(p(l, "instagram"), `https://instagram.com/${c.instagram_username}`);
-    if (own) k.text(p(l, "unlink_instagram"), "m:unlink_instagram");
+    k.url(p(l, "instagram"), `https://instagram.com/${c.instagram_username}`)
+      .style("primary");
+    if (own)
+      k.text(p(l, "unlink_instagram"), "m:unlink_instagram").style("danger");
     k.row();
   }
   if (!own)
     k.text(p(l, "report"), `report:${c.id}`)
+      .style("danger")
       .text(p(l, "block"), `block:${c.id}`)
+      .style("danger")
       .row();
   k.text(p(l, "back"), "m:home");
   if (c.photo) {
