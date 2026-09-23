@@ -71,9 +71,11 @@ async function write(query: PromiseLike<{ error: unknown }>) {
 }
 export function languageButtons() {
   return new InlineKeyboard()
-    .text("English", "lang:en")
-    .text("O‘zbekcha", "lang:uz")
-    .text("Русский", "lang:ru");
+    .text("🇬🇧 English", "lang:en")
+    .row()
+    .text("🇺🇿 O‘zbekcha", "lang:uz")
+    .row()
+    .text("🇷🇺 Русский", "lang:ru");
 }
 export function menu(l: Language) {
   const k = new InlineKeyboard();
@@ -679,7 +681,7 @@ export async function product(
       return;
     }
     if (action === "language") {
-      await ctx.reply("English · O‘zbekcha · Русский", {
+      await ctx.reply("🌐 Choose your language\nTilni tanlang\nВыберите язык", {
         reply_markup: languageButtons(),
       });
       return;
