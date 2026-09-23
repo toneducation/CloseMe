@@ -195,18 +195,12 @@ async function moderatePhoto(
     return "ERROR";
   }
 
-  try {
-    const provider = new GoogleSafeSearchProvider(
-      googleConfig,
-      fetch,
-      diagnostic,
-    );
-    await provider.prepare();
-    return await provider.check(bytes);
-  } catch {
-    diagnostic("VISION");
-    return "ERROR";
-  }
+  const provider = new GoogleSafeSearchProvider(
+    googleConfig,
+    fetch,
+    diagnostic,
+  );
+  return provider.check(bytes);
 }
 export async function showCard(
   ctx: Context,
