@@ -359,13 +359,19 @@ export async function product(
       const message = error instanceof Error ? error.message : "";
       if (message.includes("COOLDOWN")) {
         await ctx.reply(p(l, "transfer_cooldown"), {
-          reply_markup: new InlineKeyboard().text(p(l, "back"), "m:username_settings"),
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:username_settings",
+          ),
         });
         return;
       }
       if (/TAKEN|RESERVED|FROZEN|PREMIUM|NOT_ALLOWED/.test(message)) {
         await ctx.reply(p(l, "username_unavailable"), {
-          reply_markup: new InlineKeyboard().text(p(l, "back"), "m:change_username"),
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:change_username",
+          ),
         });
         return;
       }
@@ -446,13 +452,19 @@ export async function product(
             )
           : "";
         await ctx.reply(p(l, "change_cooldown", { date }), {
-          reply_markup: new InlineKeyboard().text(p(l, "back"), "m:username_settings"),
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:username_settings",
+          ),
         });
         return;
       }
       await setFlow({ kind: "username_change" });
       await ctx.reply(p(l, "change_query"), {
-        reply_markup: new InlineKeyboard().text(p(l, "back"), "m:username_settings"),
+        reply_markup: new InlineKeyboard().text(
+          p(l, "back"),
+          "m:username_settings",
+        ),
       });
       return;
     }
@@ -460,19 +472,28 @@ export async function product(
       const status = await rpc(db, "username_self_status", { p_user: u.id });
       if (status.premium) {
         await ctx.reply(p(l, "transfer_premium"), {
-          reply_markup: new InlineKeyboard().text(p(l, "back"), "m:username_settings"),
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:username_settings",
+          ),
         });
         return;
       }
       if (!status.can_transfer) {
         await ctx.reply(p(l, "transfer_cooldown"), {
-          reply_markup: new InlineKeyboard().text(p(l, "back"), "m:username_settings"),
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:username_settings",
+          ),
         });
         return;
       }
       await setFlow({ kind: "transfer" });
       await ctx.reply(p(l, "transfer_query"), {
-        reply_markup: new InlineKeyboard().text(p(l, "back"), "m:username_settings"),
+        reply_markup: new InlineKeyboard().text(
+          p(l, "back"),
+          "m:username_settings",
+        ),
       });
       return;
     }
@@ -905,7 +926,10 @@ export async function product(
 
     if (!recipientId || recipientId === u.id) {
       await ctx.reply(p(l, "recipient_not_found"), {
-        reply_markup: new InlineKeyboard().text(p(l, "back"), "m:username_settings"),
+        reply_markup: new InlineKeyboard().text(
+          p(l, "back"),
+          "m:username_settings",
+        ),
       });
       return;
     }
@@ -958,7 +982,10 @@ export async function product(
       const message = error instanceof Error ? error.message : "";
       if (message.includes("COOLDOWN")) {
         await ctx.reply(p(l, "transfer_cooldown"), {
-          reply_markup: new InlineKeyboard().text(p(l, "back"), "m:username_settings"),
+          reply_markup: new InlineKeyboard().text(
+            p(l, "back"),
+            "m:username_settings",
+          ),
         });
         return;
       }
