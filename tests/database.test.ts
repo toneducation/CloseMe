@@ -195,13 +195,30 @@ describe("real migration and identity RPCs", () => {
       "TRANSFER_EXPIRED",
     );
   });
-  it("enforces cooldown", async () => {
+  it("lets an initial standard username transfer immediately but rate-limits later identity changes", async () => {
     const a = await account(),
       b = await account();
-    await call("claim_username", [a, "cooldown"]);
-    await expect(
-      call("begin_transfer", [a, b, "d".repeat(64)]),
-    ).rejects.toThrow("COOLDOWN");
+    await call("claim_username", [a, "freshsender"]);
+    await call("claim_username", [b, "freshrecipient"]);
+    const first = await call("begin_transfer", [a, b, "d".repeat(64)]);
+    expect(first).toBeTruthy();
+    await q("update username_transfers set state='CANCELLED' where id=$1", [first]);
+
+    const c = await account();
+    await call("claim_username", [c, "renamefirst"]);
+    const changed = (await call("change_username", [c, "renamesecond"])) as {
+      username: string;
+      previous: string;
+    };
+    expect(changed.username).toBe("renamesecond");
+    expect(changed.previous).toBe("renamefirst");
+    expect(
+      (await q("select status from usernames where canonical='renamefirst'"))[0]
+        ?.status,
+    ).toBe("AVAILABLE");
+    await expect(call("change_username", [c, "renamethird"])).rejects.toThrow(
+      "COOLDOWN",
+    );
   });
   it("atomically limits requests", async () => {
     const results = await Promise.all(
@@ -892,10 +909,30 @@ describe("Telegram webhook registration regression", () => {
       ).toHaveLength(0);
       expect(await call("visible_user", [u.id])).toBe(true);
       expect((await bot.send("/start"))?.reply_markup).toBeDefined();
-      await bot.send("m:profile", true);
+
+      await bot.send("m:search", true);
+      await bot.send("@flowaziz");
       expect(bot.replies.at(-1)?.text).toContain("@flowaziz");
+
+      await bot.send("m:settings", true);
+      await bot.send("m:username_settings", true);
+      expect(bot.replies.at(-1)?.text).toContain("@flowaziz");
+      await bot.send("m:change_username", true);
+      await bot.send("FlowAziz2");
+      await bot.send("uc:flowaziz2", true);
+      expect(bot.replies.at(-1)?.text).toContain("@flowaziz2");
+      expect(
+        (
+          await q("select canonical from usernames where owner_id=$1", [u.id])
+        )[0]?.canonical,
+      ).toBe("flowaziz2");
+      await bot.send("m:change_username", true);
+      expect(bot.replies.at(-1)?.text?.toLowerCase()).toContain("7");
+
+      await bot.send("m:profile", true);
+      expect(bot.replies.at(-1)?.text).toContain("@flowaziz2");
       const viewer = await ready();
-      const card = (await call("discover", [viewer.id, false, "flowaziz"])) as {
+      const card = (await call("discover", [viewer.id, false, "flowaziz2"])) as {
         photo: unknown;
       };
       expect(card.photo).toBe(null);
