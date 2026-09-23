@@ -985,7 +985,7 @@ describe("Telegram webhook registration regression", () => {
     try {
       await bot.send("m:settings", true);
       await bot.send("m:language", true);
-      expect((await bot.send("lang:uz", true))?.text).toContain("Tanishing");
+      expect((await bot.send("lang:uz", true))?.text).toContain("Kerakli bo‘lim");
       expect(
         (await q("select locale from users where id=$1", [u.id]))[0]?.locale,
       ).toBe("uz");
@@ -993,7 +993,7 @@ describe("Telegram webhook registration regression", () => {
 
       await bot.send("m:settings", true);
       await bot.send("m:language", true);
-      expect((await bot.send("lang:ru", true))?.text).toContain("Найдите");
+      expect((await bot.send("lang:ru", true))?.text).toContain("Выберите раздел");
       expect(
         (await q("select locale from users where id=$1", [u.id]))[0]?.locale,
       ).toBe("ru");
