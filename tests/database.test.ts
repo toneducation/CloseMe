@@ -635,6 +635,7 @@ async function botSession(
 ) {
   const stored = new Map<string, boolean>();
   const externalCalls: string[] = [];
+  const aiInputs: Record<string, unknown>[] = [];
   const replies: Record<string, unknown>[] = [];
   const pending: Promise<unknown>[] = [];
   const env: Env = {
@@ -647,7 +648,8 @@ async function botSession(
     SUPABASE_SECRET_KEY: "test-only-key",
     GOOGLE_SERVICE_ACCOUNT_JSON: options.credentials ?? "",
     AI: {
-      run: async () => {
+      run: async (_model, input) => {
+        aiInputs.push(input);
         if (!options.aiDecision || options.aiDecision === "ERROR")
           throw new Error("Workers AI unavailable");
         return { response: options.aiDecision };
@@ -844,6 +846,7 @@ async function botSession(
     replies,
     stored,
     externalCalls,
+    aiInputs,
     close: () => vi.unstubAllGlobals(),
   };
 }
@@ -1208,6 +1211,15 @@ describe("real photo upload handler regression", () => {
       ).toBe(1);
       expect(bot.externalCalls.some((x) => x.includes("googleapis.com"))).toBe(
         false,
+      );
+      const aiInput = bot.aiInputs.at(-1) as {
+        messages?: Array<{ role?: string; content?: unknown }>;
+      };
+      const userMessage = aiInput.messages?.find((m) => m.role === "user");
+      expect(Array.isArray(userMessage?.content)).toBe(true);
+      expect(JSON.stringify(userMessage?.content)).toContain('"type":"image_url"');
+      expect(JSON.stringify(userMessage?.content)).toContain(
+        "data:image/jpeg;base64,",
       );
     } finally {
       bot.close();
