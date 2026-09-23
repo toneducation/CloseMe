@@ -170,11 +170,71 @@ const rows = {
     "Скрыть / показать профиль",
   ],
   language: ["Language", "Til", "Язык"],
+  username_settings: [
+    "Your CloseMe username",
+    "CloseMe username’ingiz",
+    "Ваше имя CloseMe",
+  ],
+  change_username: [
+    "✏️ Change username",
+    "✏️ Username’ni o‘zgartirish",
+    "✏️ Изменить имя",
+  ],
+  change_query: [
+    "Choose a new username: 2–25 letters or numbers. One-character premium names are admin-only.",
+    "Yangi username yozing: 2–25 ta harf yoki raqam. Bir belgili premium nomlarni faqat admin beradi.",
+    "Введите новое имя: 2–25 букв или цифр. Односимвольные премиум-имена выдаёт администратор.",
+  ],
+  change_preview: [
+    "Change your username from @{old} to @{name}? Your previous standard username becomes available. If it is premium, it goes back to admin control. You may change again after 7 days.",
+    "@{old} nomini @{name} ga almashtirasizmi? Eski oddiy nom bo‘shaydi, premium nom esa admin nazoratiga qaytadi. Keyingi o‘zgartirish 7 kundan so‘ng.",
+    "Заменить @{old} на @{name}? Прежнее обычное имя освободится, премиум-имя вернётся под контроль администратора. Следующая смена через 7 дней.",
+  ],
+  change_done: [
+    "✅ Your username is now @{name}. You can change it again after 7 days.",
+    "✅ Yangi username: @{name}. Keyingi o‘zgartirish 7 kundan so‘ng.",
+    "✅ Ваше имя: @{name}. Следующая смена через 7 дней.",
+  ],
+  change_cooldown: [
+    "You can change your username after {date}. Changes are limited to once every 7 days.",
+    "Username’ni {date} dan keyin o‘zgartira olasiz. Limit: 7 kunda bir marta.",
+    "Изменить имя можно после {date}. Лимит: один раз в 7 дней.",
+  ],
+  username_unavailable: [
+    "That username is already taken, reserved, or unavailable. Try another.",
+    "Bu username band, zaxiralangan yoki mavjud emas. Boshqasini tanlang.",
+    "Это имя занято, зарезервировано или недоступно. Выберите другое.",
+  ],
+  transfer_query: [
+    "Enter the recipient’s CloseMe @username or their verified phone number (or share their contact). Both people must confirm. Premium one-character names are admin-controlled.",
+    "Qabul qiluvchining CloseMe @username’i yoki tasdiqlangan telefon raqamini kiriting (yoki kontaktini yuboring). Ikkala tomon tasdiqlaydi. Bir belgili premium nomlarni admin boshqaradi.",
+    "Введите @имя CloseMe получателя, подтверждённый телефон или отправьте контакт. Требуется подтверждение обеих сторон. Премиум-имена контролирует администратор.",
+  ],
+  transfer_premium: [
+    "Premium one-character usernames can only be transferred by an administrator.",
+    "Bir belgili premium username’larni faqat administrator topshira oladi.",
+    "Односимвольные премиум-имена может передавать только администратор.",
+  ],
+  recipient_not_found: [
+    "No eligible verified CloseMe recipient was found. Check their @username or phone number.",
+    "Tasdiqlangan CloseMe foydalanuvchisi topilmadi. @username yoki raqamni tekshiring.",
+    "Подтверждённый пользователь CloseMe не найден. Проверьте @имя или номер.",
+  ],
+  username_own_profile: [
+    "This is your username. Your profile is shown below.",
+    "Bu o‘zingizning username’ingiz. Profilingiz quyida.",
+    "Это ваше имя. Ниже ваш профиль.",
+  ],
+  transfer_cooldown: [
+    "A username can be transferred 7 days after the latest username change or transfer.",
+    "Username oxirgi o‘zgartirish yoki transferdan 7 kun o‘tib topshirilishi mumkin.",
+    "Передача доступна через 7 дней после смены имени или последней передачи.",
+  ],
   transfer: ["Transfer username", "Username topshirish", "Передать имя"],
   transfer_confirm: [
-    "Transfer @{name} to @{recipient}? Their current standard name will be released. You will need a new username. Confirm only if you trust this recipient.",
-    "@{name} ni @{recipient} ga berasizmi? Uning hozirgi oddiy username’i bo‘shaydi. Siz yangi username tanlaysiz. Faqat qabul qiluvchiga ishonsangiz tasdiqlang.",
-    "Передать @{name} пользователю @{recipient}? Его текущее обычное имя освободится. Вам потребуется новое имя. Подтверждайте только доверенному получателю.",
+    "Transfer @{name} to {recipient}? Their current standard name will be released. You will need a new username. Both people must confirm.",
+    "@{name} ni {recipient} ga topshirasizmi? Uning hozirgi oddiy username’i bo‘shaydi. Siz yangi username tanlaysiz. Har ikkala tomon tasdiqlashi kerak.",
+    "Передать @{name} пользователю {recipient}? Его прежнее обычное имя освободится. Вам потребуется новое имя. Обе стороны должны подтвердить.",
   ],
   confirm: ["Confirm", "Tasdiqlash", "Подтвердить"],
   transfer_pending: [
