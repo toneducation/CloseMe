@@ -59,6 +59,7 @@ beforeAll(async () => {
     "0006_photo_error_classification.sql",
     "0007_username_lifecycle.sql",
     "0008_social_profile_polish.sql",
+    "0009_accept_profile_photos.sql",
   ]) {
     await exec(
       readFileSync(
@@ -635,7 +636,6 @@ async function botSession(
 ) {
   const stored = new Map<string, boolean>();
   const externalCalls: string[] = [];
-  const aiInputs: Record<string, unknown>[] = [];
   const replies: Record<string, unknown>[] = [];
   const pending: Promise<unknown>[] = [];
   const env: Env = {
@@ -646,15 +646,6 @@ async function botSession(
     PHONE_HMAC_SECRET: "h".repeat(64),
     SUPABASE_URL: "https://database.test",
     SUPABASE_SECRET_KEY: "test-only-key",
-    GOOGLE_SERVICE_ACCOUNT_JSON: options.credentials ?? "",
-    AI: {
-      run: async (_model, input) => {
-        aiInputs.push(input);
-        if (!options.aiDecision || options.aiDecision === "ERROR")
-          throw new Error("Workers AI unavailable");
-        return { response: options.aiDecision };
-      },
-    },
   };
   const fetchMock = vi.fn(
     async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -846,7 +837,6 @@ async function botSession(
     replies,
     stored,
     externalCalls,
-    aiInputs,
     close: () => vi.unstubAllGlobals(),
   };
 }
@@ -1116,15 +1106,6 @@ describe("Telegram social menu regression", () => {
 });
 
 describe("real photo upload handler regression", () => {
-  let credentials: string;
-  beforeAll(() => {
-    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-    credentials = JSON.stringify({
-      client_email: "test@example.iam.gserviceaccount.com",
-      project_id: "closeme-test",
-      private_key: privateKey.export({ type: "pkcs8", format: "pem" }),
-    });
-  });
   async function uploadAccount(tg: number) {
     const u = await ready();
     await q(
@@ -1133,6 +1114,7 @@ describe("real photo upload handler regression", () => {
     );
     return u;
   }
+
   const photo = {
     photo: [
       {
@@ -1144,22 +1126,18 @@ describe("real photo upload handler regression", () => {
       },
     ],
   };
-  it.each(["CONFIGURATION", "TELEGRAM_FILE", "VISION", "STORAGE"])(
-    "reports %s outages accurately and preserves the old photo",
+
+  it.each(["TELEGRAM_FILE", "STORAGE"])(
+    "reports %s upload failures accurately and preserves the old photo",
     async (stage) => {
       const tg =
         810000000 +
-        ["CONFIGURATION", "TELEGRAM_FILE", "VISION", "STORAGE"].indexOf(stage) *
-          1000;
+        ["TELEGRAM_FILE", "STORAGE"].indexOf(stage) * 1000;
       const u = await uploadAccount(tg);
-      const before = (await q("select used from usage_quotas"))[0]?.used;
-      const options = {
-        credentials: stage === "CONFIGURATION" ? "{}" : credentials,
+      const bot = await botSession(tg, {
         fileError: stage === "TELEGRAM_FILE",
-        decision: stage === "VISION" ? ("ERROR" as const) : ("SAFE" as const),
         storageError: stage === "STORAGE",
-      };
-      const bot = await botSession(tg, options);
+      });
       const log = vi.spyOn(console, "warn").mockImplementation(() => {});
       try {
         await bot.send(`replace:${u.ph}`, true);
@@ -1170,125 +1148,44 @@ describe("real photo upload handler regression", () => {
           "select id,status from photos where user_id=$1 order by created_at",
           [u.id],
         );
-        expect(rows.find((r) => r.id === u.ph)?.status).toBe("APPROVED");
-        expect(rows.filter((r) => r.status === "ERROR")).toHaveLength(1);
-        expect(
-          await q("select * from risk_flags where user_id=$1", [u.id]),
-        ).toHaveLength(0);
+        expect(rows.find((row) => row.id === u.ph)?.status).toBe("APPROVED");
+        expect(rows.filter((row) => row.status === "ERROR")).toHaveLength(1);
         expect(bot.stored.size).toBe(0);
         expect(log.mock.calls.flat().join(" ")).toContain(stage);
-        if (stage === "TELEGRAM_FILE") {
-          expect((await q("select used from usage_quotas"))[0]?.used).toBe(
-            before,
-          );
-          expect(
-            bot.externalCalls.some((x) => x.includes("googleapis.com")),
-          ).toBe(false);
-        }
       } finally {
         bot.close();
         log.mockRestore();
       }
     },
   );
-  it("accepts a safe photo through Workers AI when Google credentials are absent", async () => {
+
+  it("accepts a Telegram photo without AI or moderation quota", async () => {
     const tg = 810005000;
     const u = await uploadAccount(tg);
-    const bot = await botSession(tg, {
-      credentials: "",
-      aiDecision: "SAFE",
-    });
+    await q("update usage_quotas set used=950");
+    const bot = await botSession(tg);
     try {
       await bot.send(`replace:${u.ph}`, true);
-      expect((await bot.send(photo))?.text).toContain("Photo added");
-      expect(
-        (
-          await q(
-            "select count(*)::int n from photos where user_id=$1 and status='APPROVED'",
-            [u.id],
-          )
-        )[0]?.n,
-      ).toBe(1);
-      expect(bot.externalCalls.some((x) => x.includes("googleapis.com"))).toBe(
-        false,
-      );
-      const aiInput = bot.aiInputs.at(-1) as {
-        messages?: Array<{ role?: string; content?: unknown }>;
-      };
-      const userMessage = aiInput.messages?.find((m) => m.role === "user");
-      expect(Array.isArray(userMessage?.content)).toBe(true);
-      expect(JSON.stringify(userMessage?.content)).toContain(
-        '"type":"image_url"',
-      );
-      expect(JSON.stringify(userMessage?.content)).toContain(
-        "data:image/jpeg;base64,",
-      );
-    } finally {
-      bot.close();
-    }
-  });
-
-  it("rejects unsafe replacement and atomically accepts a later safe replacement through Telegram", async () => {
-    const tg = 810010000;
-    const u = await uploadAccount(tg);
-    const options = { credentials, decision: "UNSAFE" as "SAFE" | "UNSAFE" };
-    const bot = await botSession(tg, options);
-    try {
-      await bot.send(`replace:${u.ph}`, true);
-      expect((await bot.send(photo))?.text).toContain("can't be used");
-      expect(bot.stored.size).toBe(0);
-      expect(
-        (
-          await q("select id from photos where user_id=$1 and primary_photo", [
-            u.id,
-          ])
-        )[0]?.id,
-      ).toBe(u.ph);
-      const retry = bot.replies.at(-1)?.reply_markup as {
-        inline_keyboard: { callback_data: string }[][];
-      };
-      expect(retry.inline_keyboard[0]![0]!.callback_data).toBe(
-        `replace:${u.ph}`,
-      );
-      await bot.send(retry.inline_keyboard[0]![0]!.callback_data, true);
-      options.decision = "SAFE";
       expect((await bot.send(photo))?.text).toContain("Photo added");
       const primary = (
         await q(
-          "select id,storage_path from photos where user_id=$1 and primary_photo and status='APPROVED'",
+          "select id,status,storage_path,failure_stage from photos where user_id=$1 and primary_photo",
           [u.id],
         )
       )[0]!;
       expect(primary.id).not.toBe(u.ph);
+      expect(primary.status).toBe("APPROVED");
+      expect(primary.failure_stage).toBe(null);
       expect(bot.stored.has(String(primary.storage_path))).toBe(true);
       expect(
-        (await q("select status from photos where id=$1", [u.ph]))[0]?.status,
-      ).toBe("REMOVED");
-    } finally {
-      bot.close();
-    }
-  });
-  it("does not call Google or replace the photo when monthly quota is exhausted", async () => {
-    const tg = 810020000;
-    const u = await uploadAccount(tg);
-    await q("update usage_quotas set used=950");
-    const bot = await botSession(tg, { credentials });
-    try {
-      await bot.send(`replace:${u.ph}`, true);
-      expect((await bot.send(photo))?.text).toContain(
-        "temporarily unavailable",
-      );
-      expect(bot.externalCalls.some((x) => x.includes("googleapis.com"))).toBe(
-        false,
-      );
-      expect(bot.stored.size).toBe(0);
-      expect(
-        (
-          await q("select id from photos where user_id=$1 and primary_photo", [
-            u.id,
-          ])
-        )[0]?.id,
-      ).toBe(u.ph);
+        bot.externalCalls.some(
+          (x) =>
+            x.includes("googleapis.com") ||
+            x.includes("workers-ai") ||
+            x.includes("ai.cloudflare"),
+        ),
+      ).toBe(false);
+      expect((await q("select used from usage_quotas"))[0]?.used).toBe(950);
     } finally {
       bot.close();
       await q("update usage_quotas set used=0");
