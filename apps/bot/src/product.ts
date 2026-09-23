@@ -341,8 +341,7 @@ export async function product(
     await ctx.reply(p(l, step as ProductKey), { reply_markup: k });
   }
   if (cb?.startsWith("uc:")) {
-    if (flow.kind !== "username_change_confirm")
-      throw new Error("INVALID");
+    if (flow.kind !== "username_change_confirm") throw new Error("INVALID");
     const requested = canonicalUsername(cb.slice(3));
     if (requested.length < 2 || requested !== flow.draft.name)
       throw new Error("INVALID");
@@ -437,10 +436,9 @@ export async function product(
         .text(p(l, "transfer"), "m:transfer")
         .row()
         .text(p(l, "back"), "m:settings");
-      await ctx.reply(
-        `${p(l, "username_settings")}: @${status.username}`,
-        { reply_markup: k },
-      );
+      await ctx.reply(`${p(l, "username_settings")}: @${status.username}`, {
+        reply_markup: k,
+      });
       return;
     }
     if (action === "change_username") {
@@ -817,14 +815,11 @@ export async function product(
       kind: "username_change_confirm",
       draft: { name, old: current.username },
     });
-    await ctx.reply(
-      p(l, "change_preview", { old: current.username, name }),
-      {
-        reply_markup: new InlineKeyboard()
-          .text(p(l, "confirm"), `uc:${name}`)
-          .text(p(l, "back"), "m:username_settings"),
-      },
-    );
+    await ctx.reply(p(l, "change_preview", { old: current.username, name }), {
+      reply_markup: new InlineKeyboard()
+        .text(p(l, "confirm"), `uc:${name}`)
+        .text(p(l, "back"), "m:username_settings"),
+    });
     return;
   }
 
