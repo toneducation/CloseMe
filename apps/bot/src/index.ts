@@ -147,7 +147,11 @@ app.post("/telegram/webhook", async (c) => {
               .select("locale")
               .eq("telegram_id", ctx.from.id)
               .maybeSingle();
-            if (data?.locale === "en" || data?.locale === "uz" || data?.locale === "ru")
+            if (
+              data?.locale === "en" ||
+              data?.locale === "uz" ||
+              data?.locale === "ru"
+            )
               errorLocale = data.locale;
           }
           await ctx.reply(t(errorLocale, "unavailable"));
@@ -168,7 +172,11 @@ app.post("/telegram/webhook", async (c) => {
               .select("locale")
               .eq("telegram_id", ctx.from.id)
               .maybeSingle();
-            if (data?.locale === "en" || data?.locale === "uz" || data?.locale === "ru")
+            if (
+              data?.locale === "en" ||
+              data?.locale === "uz" ||
+              data?.locale === "ru"
+            )
               errorLocale = data.locale;
           }
           await ctx.reply(
@@ -230,10 +238,7 @@ app.post("/telegram/webhook", async (c) => {
       if (error) throw new Error("DB");
       member = { ...member, flow: { kind: "", draft: {}, interests: [] } };
     }
-    if (
-      languageChanged &&
-      (user.state === "PROFILE" || user.state === "READY")
-    )
+    if (languageChanged && (user.state === "PROFILE" || user.state === "READY"))
       return showMenu(ctx, l);
     if (callback?.startsWith("t:")) return product(ctx, db, member, c.env);
     if (user.state === "PROFILE" || user.state === "READY") {

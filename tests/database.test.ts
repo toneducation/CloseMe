@@ -852,7 +852,9 @@ describe("Telegram webhook registration regression", () => {
     const tg = 800010000;
     const bot = await botSession(tg);
     try {
-      expect((await bot.send("/start"))?.text).toContain("Choose your language");
+      expect((await bot.send("/start"))?.text).toContain(
+        "Choose your language",
+      );
       await bot.send("lang:en", true);
       const { t } = await import("../packages/shared/src/i18n");
       await bot.send(t("en", "adult"));
@@ -1122,9 +1124,9 @@ describe("real photo upload handler regression", () => {
           )
         )[0]?.n,
       ).toBe(1);
-      expect(
-        bot.externalCalls.some((x) => x.includes("googleapis.com")),
-      ).toBe(false);
+      expect(bot.externalCalls.some((x) => x.includes("googleapis.com"))).toBe(
+        false,
+      );
     } finally {
       bot.close();
     }
