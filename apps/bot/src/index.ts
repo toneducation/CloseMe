@@ -18,9 +18,18 @@ import {
   languageButtons,
   deliver,
   reportReason,
+  showMenu,
 } from "./product";
+export interface WorkersAI {
+  run(
+    model: string,
+    input: Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ): Promise<unknown>;
+}
 export interface Env {
-  GOOGLE_SERVICE_ACCOUNT_JSON: string;
+  AI: WorkersAI;
+  GOOGLE_SERVICE_ACCOUNT_JSON?: string;
   PHOTO_MODERATION_MONTHLY_LIMIT?: string;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
@@ -91,13 +100,6 @@ app.post("/telegram/webhook", async (c) => {
   const db = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_SECRET_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const { data: receipt, error: receiptError } = await db
-    .from("webhook_receipts")
-    .select("update_id")
-    .eq("update_id", update.update_id)
-    .maybeSingle();
-  if (receiptError) return c.json({ error: "Unavailable" }, 503);
-  if (receipt) return c.json({ ok: true });
   const lease = crypto.randomUUID();
   const { data: claimed, error: leaseError } = await db.rpc("claim_update", {
     p_id: update.update_id,
@@ -137,8 +139,23 @@ app.post("/telegram/webhook", async (c) => {
         message.includes("ACCOUNT_UNAVAILABLE") ||
         message.includes("users_phone_hmac_key")
       ) {
-        if (ctx.chat?.type === "private")
-          await ctx.reply(t(language(ctx.from?.language_code), "unavailable"));
+        if (ctx.chat?.type === "private") {
+          let errorLocale = language(ctx.from?.language_code);
+          if (ctx.from?.id) {
+            const { data } = await db
+              .from("users")
+              .select("locale")
+              .eq("telegram_id", ctx.from.id)
+              .maybeSingle();
+            if (
+              data?.locale === "en" ||
+              data?.locale === "uz" ||
+              data?.locale === "ru"
+            )
+              errorLocale = data.locale;
+          }
+          await ctx.reply(t(errorLocale, "unavailable"));
+        }
         return;
       }
       if (
@@ -147,13 +164,25 @@ app.post("/telegram/webhook", async (c) => {
           message,
         )
       ) {
-        if (ctx.chat?.type === "private")
+        if (ctx.chat?.type === "private") {
+          let errorLocale = language(ctx.from?.language_code);
+          if (ctx.from?.id) {
+            const { data } = await db
+              .from("users")
+              .select("locale")
+              .eq("telegram_id", ctx.from.id)
+              .maybeSingle();
+            if (
+              data?.locale === "en" ||
+              data?.locale === "uz" ||
+              data?.locale === "ru"
+            )
+              errorLocale = data.locale;
+          }
           await ctx.reply(
-            t(
-              language(ctx.from?.language_code),
-              message.includes("LIMIT") ? "limited" : "error",
-            ),
+            t(errorLocale, message.includes("LIMIT") ? "limited" : "error"),
           );
+        }
         return;
       }
       throw error;
@@ -174,17 +203,14 @@ app.post("/telegram/webhook", async (c) => {
       await ctx.reply(t(locale, "limited"));
       return;
     }
-    let user = userSchema.parse(
-      await rpc("onboard", { p_telegram: ctx.from.id, p_locale: locale }),
-    );
-    const { data: stored, error: storedError } = await db
-      .from("users")
-      .select("id,locale,state,status,language_selected,flow")
-      .eq("id", user.id)
-      .single();
-    if (storedError) throw new Error("DB");
-    let member = memberSchema.parse(stored);
+    const onboarded = await rpc("onboard", {
+      p_telegram: ctx.from.id,
+      p_locale: locale,
+    });
+    let user = userSchema.parse(onboarded);
+    let member = memberSchema.parse(onboarded);
     const callback = ctx.callbackQuery?.data;
+    let languageChanged = false;
     if (callback?.startsWith("lang:")) {
       const selected = z.enum(["en", "uz", "ru"]).parse(callback.slice(5));
       const { error } = await db
@@ -194,9 +220,10 @@ app.post("/telegram/webhook", async (c) => {
       if (error) throw new Error("DB");
       user = { ...user, locale: selected };
       member = { ...member, locale: selected, language_selected: true };
+      languageChanged = true;
     }
     if (!member.language_selected) {
-      await ctx.reply("English · O‘zbekcha · Русский", {
+      await ctx.reply("🌐 Choose your language\nTilni tanlang\nВыберите язык", {
         reply_markup: languageButtons(),
       });
       return;
@@ -211,6 +238,8 @@ app.post("/telegram/webhook", async (c) => {
       if (error) throw new Error("DB");
       member = { ...member, flow: { kind: "", draft: {}, interests: [] } };
     }
+    if (languageChanged && (user.state === "PROFILE" || user.state === "READY"))
+      return showMenu(ctx, l);
     if (callback?.startsWith("t:")) return product(ctx, db, member, c.env);
     if (user.state === "PROFILE" || user.state === "READY") {
       if (callback?.startsWith("reason:")) return reportReason(ctx, db, member);

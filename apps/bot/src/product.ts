@@ -71,9 +71,11 @@ async function write(query: PromiseLike<{ error: unknown }>) {
 }
 export function languageButtons() {
   return new InlineKeyboard()
-    .text("English", "lang:en")
-    .text("O‘zbekcha", "lang:uz")
-    .text("Русский", "lang:ru");
+    .text("🇬🇧 English", "lang:en")
+    .row()
+    .text("🇺🇿 O‘zbekcha", "lang:uz")
+    .row()
+    .text("🇷🇺 Русский", "lang:ru");
 }
 export function menu(l: Language) {
   const k = new InlineKeyboard();
@@ -97,17 +99,110 @@ export function menu(l: Language) {
 export async function showMenu(ctx: Context, l: Language) {
   await ctx.reply(p(l, "menu"), { reply_markup: menu(l) });
 }
+type InterestLabel = { id: string; label: string };
+const interestCache = new Map<
+  Language,
+  { expires: number; rows: InterestLabel[] }
+>();
+
 async function labels(db: SupabaseClient, l: Language) {
+  const cached = interestCache.get(l);
+  if (cached && cached.expires > Date.now()) return cached.rows;
+
   const { data, error } = await db
     .from("interests")
     .select("id,label_en,label_uz,label_ru")
     .eq("active", true)
     .order("id");
   if (error) throw new Error("DB");
-  return (data ?? []).map((x) => ({
+  const rows = (data ?? []).map((x) => ({
     id: String(x.id),
     label: String(x[`label_${l}`]),
   }));
+  interestCache.set(l, { expires: Date.now() + 10 * 60_000, rows });
+  return rows;
+}
+
+type PhotoDecision = "SAFE" | "UNSAFE" | "ERROR";
+
+function base64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function aiText(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  if (typeof record.response === "string") return record.response;
+  if (typeof record.result === "string") return record.result;
+  const choices = Array.isArray(record.choices) ? record.choices : [];
+  const first = choices[0] as Record<string, unknown> | undefined;
+  const message =
+    first?.message && typeof first.message === "object"
+      ? (first.message as Record<string, unknown>)
+      : undefined;
+  return typeof message?.content === "string" ? message.content : "";
+}
+
+async function workersAiPhotoCheck(
+  env: Env,
+  bytes: Uint8Array,
+): Promise<PhotoDecision> {
+  try {
+    const response = await env.AI.run(
+      "@cf/google/gemma-4-26b-a4b-it",
+      {
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a strict profile-photo safety classifier. Reply with exactly SAFE or UNSAFE and nothing else.",
+          },
+          {
+            role: "user",
+            content:
+              "Classify this image. UNSAFE means nudity, exposed genitals or breasts, sexual or strongly racy content, graphic violence, gore, or an image that is unsafe for a general adult relationship profile. If uncertain, choose UNSAFE.",
+          },
+        ],
+        image: `data:image/jpeg;base64,${base64(bytes)}`,
+        temperature: 0,
+        max_completion_tokens: 8,
+        chat_template_kwargs: { thinking: false },
+      },
+      { rejectIfBusy: true },
+    );
+    const answer = aiText(response).trim().toUpperCase();
+    if (answer.startsWith("SAFE")) return "SAFE";
+    if (answer.startsWith("UNSAFE")) return "UNSAFE";
+    return "ERROR";
+  } catch {
+    return "ERROR";
+  }
+}
+
+async function moderatePhoto(
+  env: Env,
+  bytes: Uint8Array,
+  diagnostic: (code: string) => void,
+): Promise<PhotoDecision> {
+  const edge = await workersAiPhotoCheck(env, bytes);
+  if (edge !== "ERROR") return edge;
+
+  const googleConfig = env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
+  if (!googleConfig) {
+    diagnostic("AI");
+    return "ERROR";
+  }
+
+  const provider = new GoogleSafeSearchProvider(
+    googleConfig,
+    fetch,
+    diagnostic,
+  );
+  return provider.check(bytes);
 }
 export async function showCard(
   ctx: Context,
@@ -151,8 +246,13 @@ export async function showCard(
   } else await ctx.reply(caption, { parse_mode: "HTML", reply_markup: k });
 }
 async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
-  const l = u.locale,
-    photo = ctx.message?.photo?.at(-1);
+  const l = u.locale;
+  const variants = ctx.message?.photo ?? [];
+  const photo =
+    [...variants]
+      .reverse()
+      .find((item) => (item.file_size ?? 0) <= 2.5 * 1024 * 1024) ??
+    variants.at(-1);
   if (!photo) return;
   const pid = String(
     await rpc(db, "photo_begin", {
@@ -162,7 +262,7 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
     }),
   );
   let path: string | undefined;
-  let stage = "CONFIGURATION";
+  let stage = "TELEGRAM_FILE";
   const diagnostic = (code: string) =>
     console.warn(
       JSON.stringify({
@@ -178,13 +278,6 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
       .min(1)
       .max(950)
       .parse(env.PHOTO_MODERATION_MONTHLY_LIMIT ?? "950");
-    const provider = new GoogleSafeSearchProvider(
-      env.GOOGLE_SERVICE_ACCOUNT_JSON,
-      fetch,
-      diagnostic,
-    );
-    await provider.prepare();
-    stage = "TELEGRAM_FILE";
     if ((photo.file_size ?? 0) > 5 * 1024 * 1024) throw new Error("SIZE");
     const f = await ctx.api.getFile(photo.file_id);
     if (
@@ -211,7 +304,8 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
       await ctx.reply(p(l, "photo_unavailable"));
       return;
     }
-    const decision = await provider.check(bytes);
+    stage = "MODERATION";
+    const decision = await moderatePhoto(env, bytes, diagnostic);
     if (decision === "SAFE") {
       stage = "STORAGE";
       path = `${u.id}/${pid}.jpg`;
@@ -587,7 +681,7 @@ export async function product(
       return;
     }
     if (action === "language") {
-      await ctx.reply("English · O‘zbekcha · Русский", {
+      await ctx.reply("🌐 Choose your language\nTilni tanlang\nВыберите язык", {
         reply_markup: languageButtons(),
       });
       return;
