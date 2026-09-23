@@ -880,7 +880,20 @@ export async function product(
     const [action, id] = cb.split(":");
     if (!id || !action) throw new Error("INVALID");
     uuid.parse(id);
-    if (["like", "super", "skip", "block", "unmatch"].includes(action)) {
+    if (["like", "super", "skip"].includes(action)) {
+      await social(action, id);
+      const next = await rpc(db, "discover", { p_user: u.id, p_near: false });
+      if (next) await showCard(ctx, db, u, next);
+      else
+        await ctx.reply(p(l, "no_discover"), {
+          reply_markup: new InlineKeyboard()
+            .text(p(l, "retry"), "m:find")
+            .row()
+            .text(p(l, "back"), "m:home"),
+        });
+      return;
+    }
+    if (action === "block" || action === "unmatch") {
       await social(action, id);
       await ctx.reply(p(l, "saved"), { reply_markup: menu(l) });
       return;
@@ -959,12 +972,17 @@ export async function product(
     );
     await setFlow({});
     await ctx.reply(p(l, "saved"), { reply_markup: { remove_keyboard: true } });
-    await showCard(
-      ctx,
-      db,
-      u,
-      await rpc(db, "discover", { p_user: u.id, p_near: true }),
-    );
+    const nearby = await rpc(db, "discover", { p_user: u.id, p_near: true });
+    if (!nearby) {
+      await ctx.reply(p(l, "no_nearby"), {
+        reply_markup: new InlineKeyboard()
+          .text(p(l, "retry"), "m:near")
+          .row()
+          .text(p(l, "back"), "m:home"),
+      });
+      return;
+    }
+    await showCard(ctx, db, u, nearby);
     return;
   }
   if (text && flow.kind === "filters") {
