@@ -991,7 +991,7 @@ describe("Telegram webhook registration regression", () => {
       expect(
         (await q("select locale from users where id=$1", [u.id]))[0]?.locale,
       ).toBe("uz");
-      expect((await bot.send("/start"))?.text).toContain("Tanishing");
+      expect((await bot.send("/start"))?.text).toContain("Kerakli bo‘lim");
 
       await bot.send("m:settings", true);
       await bot.send("m:language", true);
