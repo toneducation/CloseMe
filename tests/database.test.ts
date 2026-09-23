@@ -1217,7 +1217,9 @@ describe("real photo upload handler regression", () => {
       };
       const userMessage = aiInput.messages?.find((m) => m.role === "user");
       expect(Array.isArray(userMessage?.content)).toBe(true);
-      expect(JSON.stringify(userMessage?.content)).toContain('"type":"image_url"');
+      expect(JSON.stringify(userMessage?.content)).toContain(
+        '"type":"image_url"',
+      );
       expect(JSON.stringify(userMessage?.content)).toContain(
         "data:image/jpeg;base64,",
       );
