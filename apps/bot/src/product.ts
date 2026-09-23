@@ -154,27 +154,24 @@ async function workersAiPhotoCheck(
   bytes: Uint8Array,
 ): Promise<PhotoDecision> {
   try {
-    const response = await env.AI.run(
-      "@cf/google/gemma-4-26b-a4b-it",
-      {
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a strict profile-photo safety classifier. Reply with exactly SAFE or UNSAFE and nothing else.",
-          },
-          {
-            role: "user",
-            content:
-              "Classify this image. UNSAFE means nudity, exposed genitals or breasts, sexual or strongly racy content, graphic violence, gore, or an image that is unsafe for a general adult relationship profile. If uncertain, choose UNSAFE.",
-          },
-        ],
-        image: `data:image/jpeg;base64,${base64(bytes)}`,
-        temperature: 0,
-        max_tokens: 8,
-        chat_template_kwargs: { enable_thinking: false },
-      },
-    );
+    const response = await env.AI.run("@cf/google/gemma-4-26b-a4b-it", {
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a strict profile-photo safety classifier. Reply with exactly SAFE or UNSAFE and nothing else.",
+        },
+        {
+          role: "user",
+          content:
+            "Classify this image. UNSAFE means nudity, exposed genitals or breasts, sexual or strongly racy content, graphic violence, gore, or an image that is unsafe for a general adult relationship profile. If uncertain, choose UNSAFE.",
+        },
+      ],
+      image: `data:image/jpeg;base64,${base64(bytes)}`,
+      temperature: 0,
+      max_tokens: 8,
+      chat_template_kwargs: { enable_thinking: false },
+    });
     const answer = aiText(response).trim().toUpperCase();
     if (answer.startsWith("SAFE")) return "SAFE";
     if (answer.startsWith("UNSAFE")) return "UNSAFE";
@@ -255,8 +252,10 @@ export async function showCard(
         .row();
   k.row().copyText(`📋 @${c.username}`, `@${c.username}`);
   if (c.instagram_username) {
-    k.url(p(l, "instagram"), `https://instagram.com/${c.instagram_username}`)
-      .style("primary");
+    k.url(
+      p(l, "instagram"),
+      `https://instagram.com/${c.instagram_username}`,
+    ).style("primary");
     if (own)
       k.text(p(l, "unlink_instagram"), "m:unlink_instagram").style("danger");
     k.row();
@@ -418,7 +417,9 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
       p_photo: pid,
       p_decision: "ERROR",
     });
-    await write(db.from("photos").update({ failure_stage: stage }).eq("id", pid));
+    await write(
+      db.from("photos").update({ failure_stage: stage }).eq("id", pid),
+    );
     await ctx.reply(p(l, "photo_unavailable"), {
       reply_markup: new InlineKeyboard().text(
         p(l, "replace"),
@@ -718,8 +719,8 @@ export async function product(
     if (["likes", "matches", "messages", "requests"].includes(action)) {
       const rows = await rpc(db, "inbox", { p_user: u.id, p_kind: action });
       if (action === "requests") {
-        const visible = (rows ?? []).filter(
-          (r: { profile?: unknown }) => Boolean(r.profile),
+        const visible = (rows ?? []).filter((r: { profile?: unknown }) =>
+          Boolean(r.profile),
         );
         if (!visible.length) {
           await ctx.reply(p(l, "no_requests"), {
@@ -759,8 +760,7 @@ export async function product(
         const k = new InlineKeyboard();
         for (const card of visible)
           k.text(`@${card.username}`, `view:${card.id}`).row();
-        if (action === "messages")
-          k.text(p(l, "requests"), "m:requests").row();
+        if (action === "messages") k.text(p(l, "requests"), "m:requests").row();
         k.text(p(l, "back"), "m:home");
         await ctx.reply(p(l, action as ProductKey), { reply_markup: k });
       }
