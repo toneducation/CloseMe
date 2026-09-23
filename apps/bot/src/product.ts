@@ -51,6 +51,7 @@ const cardSchema = z.object({
   city: z.string(),
   intent: z.enum(intents),
   bio: z.string(),
+  instagram_username: z.string().nullable().optional(),
   photo: z.string().nullable(),
   photo_id: uuid.nullable(),
   interests: z.array(z.string()),
@@ -169,10 +170,9 @@ async function workersAiPhotoCheck(
         ],
         image: `data:image/jpeg;base64,${base64(bytes)}`,
         temperature: 0,
-        max_completion_tokens: 8,
-        chat_template_kwargs: { thinking: false },
+        max_tokens: 8,
+        chat_template_kwargs: { enable_thinking: false },
       },
-      { rejectIfBusy: true },
     );
     const answer = aiText(response).trim().toUpperCase();
     if (answer.startsWith("SAFE")) return "SAFE";
@@ -204,6 +204,22 @@ async function moderatePhoto(
   );
   return provider.check(bytes);
 }
+function normalizeInstagram(value: string): string {
+  let v = value.trim();
+  v = v.replace(/^https?:\/\/(?:www\.)?instagram\.com\//i, "");
+  v = v.replace(/^instagram\.com\//i, "");
+  v = v.split(/[/?#]/, 1)[0] ?? "";
+  v = v.replace(/^@/, "").toLowerCase();
+  if (
+    !/^[a-z0-9._]{1,30}$/.test(v) ||
+    v.startsWith(".") ||
+    v.endsWith(".") ||
+    v.includes("..")
+  )
+    throw new Error("INVALID_INSTAGRAM");
+  return v;
+}
+
 export async function showCard(
   ctx: Context,
   db: SupabaseClient,
@@ -219,21 +235,33 @@ export async function showCard(
   const c = parsed.data,
     l = u.locale,
     ls = await labels(db, l);
-  const caption = `<b>@${escapeHtml(c.username)}</b>\n\n${escapeHtml(c.display_name)} · ${c.age}\n${escapeHtml(c.city)}${c.distance ? " · " + p(l, "distance", { n: c.distance }) : ""}\n\n${p(l, c.intent)}\n${escapeHtml(c.interests.map((i) => ls.find((x) => x.id === i)?.label ?? i).join(" · "))}\n\n${escapeHtml(c.bio)}`;
+  const instagram = c.instagram_username
+    ? `\n📸 <a href="https://instagram.com/${escapeHtml(c.instagram_username)}">@${escapeHtml(c.instagram_username)}</a>`
+    : "";
+  const caption = `<b>@${escapeHtml(c.username)}</b>\n\n<b>${escapeHtml(c.display_name)}</b> · ${c.age}\n📍 ${escapeHtml(c.city)}${c.distance ? " · " + p(l, "distance", { n: c.distance }) : ""}\n\n💫 ${p(l, c.intent)}\n${escapeHtml(c.interests.map((i) => ls.find((x) => x.id === i)?.label ?? i).join(" · "))}\n\n${escapeHtml(c.bio)}${instagram}`;
   const k = own
     ? new InlineKeyboard()
         .text(p(l, "edit"), "m:edit")
         .text(p(l, "photos"), "m:photos")
+        .row()
+        .text(p(l, "link_instagram"), "m:instagram")
     : new InlineKeyboard()
         .text(p(l, "like"), `like:${c.id}`)
         .text(p(l, "message"), `compose:${c.id}`)
         .row()
         .text(p(l, "super"), `super:${c.id}`)
         .text(p(l, "skip"), `skip:${c.id}`)
-        .row()
-        .text(p(l, "report"), `report:${c.id}`)
-        .text(p(l, "block"), `block:${c.id}`);
-  k.row().text(p(l, "back"), "m:home");
+        .row();
+  if (c.instagram_username) {
+    k.url(p(l, "instagram"), `https://instagram.com/${c.instagram_username}`);
+    if (own) k.text(p(l, "unlink_instagram"), "m:unlink_instagram");
+    k.row();
+  }
+  if (!own)
+    k.text(p(l, "report"), `report:${c.id}`)
+      .text(p(l, "block"), `block:${c.id}`)
+      .row();
+  k.text(p(l, "back"), "m:home");
   if (c.photo) {
     const { data, error } = await db.storage
       .from("profile-photos")
@@ -247,13 +275,10 @@ export async function showCard(
 }
 async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
   const l = u.locale;
-  const variants = ctx.message?.photo ?? [];
-  const photo =
-    [...variants]
-      .reverse()
-      .find((item) => (item.file_size ?? 0) <= 2.5 * 1024 * 1024) ??
-    variants.at(-1);
-  if (!photo) return;
+  const variants = [...(ctx.message?.photo ?? [])]
+    .filter((item) => (item.file_size ?? 0) <= 5 * 1024 * 1024)
+    .sort((a, b) => b.width * b.height - a.width * a.height);
+  if (!variants.length) return;
   const pid = String(
     await rpc(db, "photo_begin", {
       p_user: u.id,
@@ -272,27 +297,45 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
       }),
     );
   try {
-    const lim = z.coerce
-      .number()
-      .int()
-      .min(1)
-      .max(950)
-      .parse(env.PHOTO_MODERATION_MONTHLY_LIMIT ?? "950");
-    if ((photo.file_size ?? 0) > 5 * 1024 * 1024) throw new Error("SIZE");
-    const f = await ctx.api.getFile(photo.file_id);
-    if (
-      !f.file_path ||
-      !/^photos\/[a-zA-Z0-9_./-]+$/.test(f.file_path) ||
-      f.file_path.includes("..")
-    )
-      throw new Error("PATH");
-    const response = await fetch(
-      `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${f.file_path}`,
-      { signal: AbortSignal.timeout(8000), redirect: "error" },
-    );
-    if (!response.ok) throw new Error("FETCH");
-    const bytes = await boundedBody(response, 5 * 1024 * 1024);
-    if (bytes[0] !== 255 || bytes[1] !== 216) throw new Error("JPEG");
+    const configuredLimit = Number(env.PHOTO_MODERATION_MONTHLY_LIMIT);
+    const lim =
+      Number.isInteger(configuredLimit) &&
+      configuredLimit >= 1 &&
+      configuredLimit <= 950
+        ? configuredLimit
+        : 950;
+
+    let bytes: Uint8Array | undefined;
+    // Telegram returns several sizes. Try the best variants in order so a
+    // transient CDN/getFile issue does not make photo upload look broken.
+    for (const photo of variants.slice(0, 3)) {
+      try {
+        const f = await ctx.api.getFile(photo.file_id);
+        if (
+          !f.file_path ||
+          !/^photos\/[a-zA-Z0-9_./-]+$/.test(f.file_path) ||
+          f.file_path.includes("..")
+        )
+          continue;
+        const response = await fetch(
+          `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${f.file_path}`,
+          { signal: AbortSignal.timeout(12000) },
+        );
+        if (!response.ok) continue;
+        const candidate = await boundedBody(response, 5 * 1024 * 1024);
+        if (
+          candidate.byteLength >= 4 &&
+          candidate[0] === 255 &&
+          candidate[1] === 216
+        ) {
+          bytes = candidate;
+          break;
+        }
+      } catch {
+        // Fall through to a smaller Telegram photo variant.
+      }
+    }
+    if (!bytes) throw new Error("TELEGRAM_FILE");
     if (
       !(await rpc(db, "reserve_photo_quota", { p_photo: pid, p_limit: lim }))
     ) {
@@ -488,7 +531,7 @@ export async function product(
   }
   if (cb?.startsWith("m:")) {
     const action = cb.slice(2);
-    await setFlow({});
+    if (flow.kind) await setFlow({});
     if (action === "home") return showMenu(ctx, l);
     if (action === "find" || action === "near") {
       if (action === "near") {
@@ -509,12 +552,20 @@ export async function product(
           return;
         }
       }
-      await showCard(
-        ctx,
-        db,
-        u,
-        await rpc(db, "discover", { p_user: u.id, p_near: action === "near" }),
-      );
+      const found = await rpc(db, "discover", {
+        p_user: u.id,
+        p_near: action === "near",
+      });
+      if (!found) {
+        await ctx.reply(p(l, action === "near" ? "no_nearby" : "no_discover"), {
+          reply_markup: new InlineKeyboard()
+            .text(p(l, "retry"), `m:${action}`)
+            .row()
+            .text(p(l, "back"), "m:home"),
+        });
+        return;
+      }
+      await showCard(ctx, db, u, found);
       return;
     }
     if (action === "search") {
@@ -598,6 +649,18 @@ export async function product(
         await rpc(db, "card", { p_viewer: u.id, p_target: u.id }),
         true,
       );
+    if (action === "instagram") {
+      await setFlow({ kind: "instagram" });
+      await ctx.reply(p(l, "instagram_prompt"), {
+        reply_markup: new InlineKeyboard().text(p(l, "back"), "m:profile"),
+      });
+      return;
+    }
+    if (action === "unlink_instagram") {
+      await rpc(db, "set_instagram", { p_user: u.id, p_username: "" });
+      await ctx.reply(p(l, "instagram_removed"), { reply_markup: menu(l) });
+      return;
+    }
     if (action === "upload") {
       await setFlow({ kind: "upload" });
       await ctx.reply(p(l, "upload"));
@@ -639,27 +702,51 @@ export async function product(
     if (["likes", "matches", "messages", "requests"].includes(action)) {
       const rows = await rpc(db, "inbox", { p_user: u.id, p_kind: action });
       if (action === "requests") {
-        for (const r of rows ?? [])
-          if (r.profile)
-            await ctx.reply(`@${r.profile.username}\n\n${r.body}`, {
-              reply_markup: new InlineKeyboard()
-                .text(p(l, "accept"), `accept:${r.id}`)
-                .text(p(l, "decline"), `decline:${r.id}`)
-                .row()
-                .text(p(l, "view"), `view:${r.profile.id}`)
-                .text(p(l, "block"), `block:${r.profile.id}`)
-                .text(p(l, "report"), `report:${r.profile.id}`),
-            });
+        const visible = (rows ?? []).filter(
+          (r: { profile?: unknown }) => Boolean(r.profile),
+        );
+        if (!visible.length) {
+          await ctx.reply(p(l, "no_requests"), {
+            reply_markup: new InlineKeyboard().text(p(l, "back"), "m:messages"),
+          });
+          return;
+        }
+        for (const r of visible) {
+          const profile = r.profile as { id: string; username: string };
+          await ctx.reply(`@${profile.username}\n\n${r.body}`, {
+            reply_markup: new InlineKeyboard()
+              .text(p(l, "accept"), `accept:${r.id}`)
+              .text(p(l, "decline"), `decline:${r.id}`)
+              .row()
+              .text(p(l, "view"), `view:${profile.id}`)
+              .text(p(l, "block"), `block:${profile.id}`)
+              .text(p(l, "report"), `report:${profile.id}`),
+          });
+        }
       } else {
+        const visible = (rows ?? []).filter(Boolean);
+        if (!visible.length) {
+          const emptyKey =
+            action === "likes"
+              ? "no_likes"
+              : action === "matches"
+                ? "no_matches"
+                : "no_messages";
+          const k = new InlineKeyboard();
+          if (action === "messages")
+            k.text(p(l, "requests"), "m:requests").row();
+          else k.text(p(l, "find"), "m:find").row();
+          k.text(p(l, "back"), "m:home");
+          await ctx.reply(p(l, emptyKey), { reply_markup: k });
+          return;
+        }
         const k = new InlineKeyboard();
-        for (const c of rows ?? [])
-          if (c) k.text(`@${c.username}`, `view:${c.id}`).row();
-        await ctx.reply(p(l, action as ProductKey), {
-          reply_markup: k
-            .text(p(l, "requests"), "m:requests")
-            .row()
-            .text(p(l, "back"), "m:home"),
-        });
+        for (const card of visible)
+          k.text(`@${card.username}`, `view:${card.id}`).row();
+        if (action === "messages")
+          k.text(p(l, "requests"), "m:requests").row();
+        k.text(p(l, "back"), "m:home");
+        await ctx.reply(p(l, action as ProductKey), { reply_markup: k });
       }
       return;
     }
@@ -668,6 +755,7 @@ export async function product(
       (
         [
           "username_settings",
+          "link_instagram",
           "filters",
           "forget_location",
           "notifications",
@@ -890,6 +978,25 @@ export async function product(
     await setFlow({});
     return showMenu(ctx, l);
   }
+  if (text && flow.kind === "instagram") {
+    let username: string;
+    try {
+      username = normalizeInstagram(text);
+    } catch {
+      await ctx.reply(p(l, "instagram_invalid"));
+      return;
+    }
+    await rpc(db, "set_instagram", {
+      p_user: u.id,
+      p_username: username,
+    });
+    await setFlow({});
+    await ctx.reply(p(l, "instagram_saved", { username }), {
+      reply_markup: menu(l),
+    });
+    return;
+  }
+
   if (text && flow.kind === "username_change") {
     let name: string;
     try {
