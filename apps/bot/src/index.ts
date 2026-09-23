@@ -20,17 +20,7 @@ import {
   reportReason,
   showMenu,
 } from "./product";
-export interface WorkersAI {
-  run(
-    model: string,
-    input: Record<string, unknown>,
-    options?: Record<string, unknown>,
-  ): Promise<unknown>;
-}
 export interface Env {
-  AI: WorkersAI;
-  GOOGLE_SERVICE_ACCOUNT_JSON?: string;
-  PHOTO_MODERATION_MONTHLY_LIMIT?: string;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   SUPABASE_URL: string;
