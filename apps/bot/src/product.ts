@@ -542,8 +542,7 @@ export async function product(
       p_profile: { ...flow.draft, intent },
       p_interests: flow.interests,
     });
-    await ctx.reply(p(l, "saved"));
-    await ctx.reply(p(l, "upload"), { reply_markup: menu(l) });
+    await ctx.reply(p(l, "profile_ready"), { reply_markup: menu(l) });
     return;
   }
   if (cb) {

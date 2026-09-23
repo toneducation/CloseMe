@@ -11,7 +11,7 @@ The owner can configure the services from Safari on an iPhone. Never send passwo
 ## What is included
 
 - EN / UZ / RU onboarding: language, adult declaration, DOB, own Telegram contact, HMAC-only phone fingerprint and independent CloseMe username.
-- Profiles, five–ten configurable interests, relationship intent, one–six private approved photos; add, replace, delete and choose primary.
+- Profiles, five–ten configurable interests, relationship intent, zero–six optional private approved photos; add, replace, delete and choose primary.
 - Google Vision SafeSearch adapter; adult/racy/violence `LIKELY` or `VERY_LIKELY` rejected. Unknown, malformed, failed or timed-out checks fail closed. No normal manual approval queue.
 - Atomic monthly photo reservations, default 950; no retry/overflow provider. Rejected bytes are never written to Storage. Old approved photos survive rejected replacements.
 - Discovery, username search, opt-in approximate nearby search, age/radius/preferences, likes/super likes/passes, idempotent matches, message requests and private text relay.
@@ -42,7 +42,7 @@ Since your Supabase project is ready:
 3. Open **SQL Editor → New query**.
 4. On GitHub, open `packages/database/migrations/0001_identity.sql`. If the identity foundation was already applied, **do not run it again**. Existing `users`, `usernames` and `admin_users` tables identify that foundation; check your migration records if uncertain. Do not drop these tables.
 5. For a fresh project only, run `0001_identity.sql` once.
-6. Run `0002_relationships.sql`, then `0003_administration.sql`, then `0004_storage.sql`, each once, in that order. Each file uses a transaction. If a file reports an error, stop and retain the error message without secrets; do not continue or reset the database.
+6. Run `0002_relationships.sql`, then `0003_administration.sql`, then `0004_storage.sql`, then `0005_optional_profile_photo.sql`, each once, in that order. Each file uses a transaction. If a file reports an error, stop and retain the error message without secrets; do not continue or reset the database.
 7. In **Storage**, confirm `profile-photos` exists and is **private**. Do not add public policies. It permits JPEGs up to 5 MB.
 8. In **Authentication → Providers / Email**, disable public signup. Enable email/password for deliberately created staff only. Disable anonymous signup.
 9. In Auth settings, enable TOTP MFA, choose a short JWT lifetime suitable for staff, and keep Auth rate limits enabled. No SMS provider is needed.
@@ -204,3 +204,9 @@ npm run build
 ```
 
 CI runs these against PostgreSQL 17. Local tests default to disposable PGlite. To exercise actual concurrent connections locally, set `TEST_DATABASE_URL` to a new disposable PostgreSQL database, never a real project. Local bot secrets may be stored in `apps/bot/.dev.vars`; admin secrets in `apps/admin/.dev.vars`. Both are ignored. Do not bypass Access in deployed code for development.
+
+## Bot repair phase 1 — optional photos
+
+Apply only `0005_optional_profile_photo.sql` if migrations 0001–0004 are already installed. It preserves data, completes previously saved profiles waiting for a photo, and keeps approved-only image selection and existing function permissions. Profiles without photos can register, search and connect using text cards. The last photo can be removed without resetting registration.
+
+Bot deployments preserve dashboard runtime variables (`keep_vars = true`). Required variable names remain in the configuration table above. Validation includes real Hono/grammY webhook handlers and PostgreSQL RPCs with simulated Telegram and Supabase HTTP boundaries; it is not a claim of live Telegram delivery or inspection of the hosted database.

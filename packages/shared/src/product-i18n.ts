@@ -89,10 +89,15 @@ const rows = {
     "CloseMe username kiriting.",
     "Введите имя CloseMe.",
   ],
+  profile_ready: [
+    "Your profile is ready. Photos are optional; add one later from My Profile → Photos.",
+    "Profilingiz tayyor. Rasm ixtiyoriy; keyin Mening profilim → Rasmlar orqali qo‘shishingiz mumkin.",
+    "Профиль готов. Фото необязательно; его можно добавить позже в Мой профиль → Фото.",
+  ],
   upload: [
-    "Send a clear, appropriate photo of yourself as a Telegram photo. At least one approved photo is required (maximum six).",
-    "O‘zingizning aniq va odobli rasmingizni Telegram rasmi sifatida yuboring. Kamida bitta tasdiqlangan rasm kerak (ko‘pi bilan 6 ta).",
-    "Отправьте своё чёткое и уместное фото как фотографию Telegram. Нужно минимум одно проверенное фото (максимум шесть).",
+    "Send a clear, appropriate photo of yourself as a Telegram photo. Photos are optional (maximum six).",
+    "O‘zingizning aniq va odobli rasmingizni Telegram rasmi sifatida yuboring. Rasm ixtiyoriy (ko‘pi bilan 6 ta).",
+    "Отправьте своё чёткое и уместное фото как фотографию Telegram. Фото необязательно (максимум шесть).",
   ],
   photo_ok: [
     "✅ Photo added to your profile.",

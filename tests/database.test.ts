@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
-import { beforeAll, afterAll, describe, it, expect } from "vitest";
+import { app, type Env } from "../apps/bot/src/index";
+import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 // CI uses a real isolated PostgreSQL service. Local runs use PostgreSQL WASM.
 const pool = process.env.TEST_DATABASE_URL
   ? new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL })
@@ -51,7 +52,11 @@ beforeAll(async () => {
       "utf8",
     ),
   );
-  for (const file of ["0002_relationships.sql", "0003_administration.sql"]) {
+  for (const file of [
+    "0002_relationships.sql",
+    "0003_administration.sql",
+    "0005_optional_profile_photo.sql",
+  ]) {
     await exec(
       readFileSync(
         new URL("../packages/database/migrations/" + file, import.meta.url),
@@ -590,5 +595,277 @@ describe("relationship safety transactions", () => {
     expect(results.filter(Boolean)).toHaveLength(2);
     expect((await q("select used from usage_quotas"))[0]?.used).toBe(950);
     expect(await call("reserve_photo_quota", [ids[0], 950])).toBe(false);
+    await q("update usage_quotas set used=0");
+  });
+});
+
+// Exercise the real Hono → grammY → Supabase client → PostgreSQL path.
+// Only network boundaries are simulated; application handlers and RPCs are real.
+async function botSession(telegram: number) {
+  const replies: Record<string, unknown>[] = [];
+  const pending: Promise<unknown>[] = [];
+  const env: Env = {
+    TELEGRAM_BOT_TOKEN: "123456:test-only-token",
+    TELEGRAM_BOT_ID: "123456",
+    TELEGRAM_BOT_USERNAME: "closeme_test_bot",
+    TELEGRAM_WEBHOOK_SECRET: "w".repeat(64),
+    PHONE_HMAC_SECRET: "h".repeat(64),
+    SUPABASE_URL: "https://database.test",
+    SUPABASE_SECRET_KEY: "test-only-key",
+    GOOGLE_SERVICE_ACCOUNT_JSON: "",
+  };
+  const fetchMock = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (url.hostname === "api.telegram.org") {
+        if (url.pathname.endsWith("/sendMessage")) replies.push(body);
+        return Response.json({
+          ok: true,
+          result: {
+            message_id: 1,
+            date: 1,
+            chat: { id: telegram, type: "private" },
+            ...body,
+          },
+        });
+      }
+      if (url.hostname !== "database.test")
+        throw new Error("Unexpected network request");
+      try {
+        if (url.pathname.startsWith("/rest/v1/rpc/")) {
+          const name = url.pathname.split("/").at(-1)!;
+          if (!/^[a-z_]+$/.test(name)) throw new Error("Invalid test RPC");
+          const args = Object.keys(body);
+          if (args.some((key) => !/^p_[a-z_]+$/.test(key)))
+            throw new Error("Invalid argument");
+          const values = Object.values(body).map((v) =>
+            v && typeof v === "object" && !Array.isArray(v)
+              ? JSON.stringify(v)
+              : v,
+          );
+          const rows = await q(
+            `select ${name}(${args.map((key, i) => `${key} := $${i + 1}`).join(",")}) as value`,
+            values,
+          );
+          return Response.json(rows[0]?.value ?? null);
+        }
+        const table = url.pathname.split("/").at(-1)!;
+        if (!/^[a-z_]+$/.test(table)) throw new Error("Invalid test table");
+        const params: unknown[] = [];
+        const bind = (v: unknown) => {
+          params.push(v && typeof v === "object" ? JSON.stringify(v) : v);
+          return `$${params.length}`;
+        };
+        const sets = Object.entries(body).map(
+          ([key, v]) => `${key}=${bind(v)}`,
+        );
+        const filters: string[] = [];
+        for (const [key, value] of url.searchParams) {
+          if (["select", "order", "limit"].includes(key)) continue;
+          if (!/^[a-z_]+$/.test(key) || !value.startsWith("eq."))
+            throw new Error("Unsupported test filter");
+          filters.push(`${key}=${bind(value.slice(3))}`);
+        }
+        const where = filters.length ? ` where ${filters.join(" and ")}` : "";
+        const rows =
+          init?.method === "PATCH"
+            ? await q(
+                `update ${table} set ${sets.join(",")}${where} returning *`,
+                params,
+              )
+            : await q(`select * from ${table}${where}`, params);
+        const single = new Headers(init?.headers)
+          .get("accept")
+          ?.includes("object+json");
+        return Response.json(single ? (rows[0] ?? null) : rows);
+      } catch (error) {
+        return Response.json(
+          {
+            message: error instanceof Error ? error.message : "DB",
+            code: "TEST_DB",
+          },
+          { status: 400 },
+        );
+      }
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  let updateId = telegram;
+  async function send(
+    value: string | Record<string, unknown>,
+    callback = false,
+  ) {
+    const from = {
+      id: telegram,
+      is_bot: false,
+      first_name: "Test",
+      language_code: "en",
+    };
+    const message = {
+      message_id: ++updateId,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: telegram, type: "private" },
+      from,
+    };
+    const update = callback
+      ? {
+          update_id: updateId,
+          callback_query: {
+            id: String(updateId),
+            from,
+            chat_instance: "test",
+            message,
+            data: value,
+          },
+        }
+      : {
+          update_id: updateId,
+          message: {
+            ...message,
+            ...(typeof value === "string" ? { text: value } : value),
+          },
+        };
+    const response = await app.request(
+      "/telegram/webhook",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Telegram-Bot-Api-Secret-Token": env.TELEGRAM_WEBHOOK_SECRET,
+        },
+        body: JSON.stringify(update),
+      },
+      env,
+      {
+        waitUntil: (p: Promise<unknown>) => pending.push(p),
+        passThroughOnException() {},
+      } as unknown as ExecutionContext,
+    );
+    await Promise.all(pending.splice(0));
+    expect(response.status).toBe(200);
+    return replies.at(-1);
+  }
+  return { send, replies, close: () => vi.unstubAllGlobals() };
+}
+
+describe("Telegram webhook registration regression", () => {
+  it("completes /start through profile without a photo and rejects invalid usernames and other contacts", async () => {
+    const tg = 800010000;
+    const bot = await botSession(tg);
+    try {
+      expect((await bot.send("/start"))?.text).toContain("English");
+      await bot.send("lang:en", true);
+      const { t } = await import("../packages/shared/src/i18n");
+      await bot.send(t("en", "adult"));
+      await bot.send("2000-01-01");
+      await bot.send({
+        contact: {
+          user_id: tg + 1,
+          phone_number: "+998901111111",
+          first_name: "Other",
+        },
+      });
+      expect(
+        (await q("select state from users where telegram_id=$1", [tg]))[0]
+          ?.state,
+      ).toBe("CONTACT");
+      await bot.send({
+        contact: {
+          user_id: tg,
+          phone_number: "+998901111112",
+          first_name: "Test",
+        },
+      });
+      for (const name of [
+        "a",
+        "ADMIN",
+        "bad_name",
+        "bad-name",
+        "a".repeat(26),
+      ]) {
+        await bot.send(name);
+        expect(
+          (await q("select state from users where telegram_id=$1", [tg]))[0]
+            ?.state,
+        ).toBe("USERNAME");
+      }
+      await bot.send("FlowAziz");
+      await bot.send("Aziz");
+      await bot.send("choose:man", true);
+      await bot.send("choose:woman", true);
+      await bot.send("Tashkent");
+      await bot.send("Architecture and books");
+      for (const interest of [
+        "travel",
+        "music",
+        "movies",
+        "coffee",
+        "architecture",
+      ])
+        await bot.send(`interest:${interest}`, true);
+      await bot.send("interests:done", true);
+      expect((await bot.send("intent:0", true))?.text).toContain(
+        "profile is ready",
+      );
+      const u = (
+        await q("select id,state from users where telegram_id=$1", [tg])
+      )[0]!;
+      expect(u.state).toBe("READY");
+      expect(
+        (
+          await q("select canonical from usernames where owner_id=$1", [u.id])
+        )[0]?.canonical,
+      ).toBe("flowaziz");
+      expect(
+        await q("select id from photos where user_id=$1", [u.id]),
+      ).toHaveLength(0);
+      expect(await call("visible_user", [u.id])).toBe(true);
+      expect((await bot.send("/start"))?.reply_markup).toBeDefined();
+      await bot.send("m:profile", true);
+      expect(bot.replies.at(-1)?.text).toContain("@flowaziz");
+      const viewer = await ready();
+      const card = (await call("discover", [viewer.id, false, "flowaziz"])) as {
+        photo: unknown;
+      };
+      expect(card.photo).toBe(null);
+      const pending = await call("photo_begin", [u.id, null, "pending"]);
+      expect(
+        ((await call("card", [viewer.id, u.id])) as { photo: unknown }).photo,
+      ).toBe(null);
+      await call("photo_finish", [u.id, pending, "UNSAFE", null]);
+      expect(
+        ((await call("card", [viewer.id, u.id])) as { photo: unknown }).photo,
+      ).toBe(null);
+    } finally {
+      bot.close();
+    }
+  });
+  it("denies an underage DOB in the real message handler", async () => {
+    const bot = await botSession(800020000);
+    try {
+      await bot.send("/start");
+      await bot.send("lang:en", true);
+      const { t } = await import("../packages/shared/src/i18n");
+      await bot.send(t("en", "adult"));
+      await bot.send("2020-01-01");
+      await bot.send("/start");
+      expect(
+        (await q("select state from users where telegram_id=800020000"))[0]
+          ?.state,
+      ).toBe("DENIED");
+    } finally {
+      bot.close();
+    }
+  });
+  it("allows removal of the last photo without undoing registration", async () => {
+    const u = await ready();
+    await call("photo_edit", [u.id, u.ph, "delete"]);
+    expect(
+      (await q("select state from users where id=$1", [u.id]))[0]?.state,
+    ).toBe("READY");
+    expect(
+      ((await call("card", [u.id, u.id])) as { photo: unknown }).photo,
+    ).toBe(null);
   });
 });

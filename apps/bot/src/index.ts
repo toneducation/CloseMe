@@ -105,6 +105,7 @@ app.post("/telegram/webhook", async (c) => {
   });
   if (leaseError || !claimed) return c.json({ error: "Retry later" }, 503);
   const bot = new Bot(c.env.TELEGRAM_BOT_TOKEN, {
+    client: { fetch },
     botInfo: {
       id: Number(c.env.TELEGRAM_BOT_ID),
       is_bot: true,
