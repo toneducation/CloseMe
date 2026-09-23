@@ -9,3 +9,6 @@ enabled = false
 
 [triggers]
 crons = ["* * * * *"]
+
+[ai]
+binding = "AI"
