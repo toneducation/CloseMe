@@ -19,11 +19,7 @@ import {
   reasons,
   type ProductKey,
 } from "../../../packages/shared/src/product-i18n";
-import {
-  boundedBody,
-  GoogleSafeSearchProvider,
-  sha256,
-} from "../../../packages/shared/src/safety";
+import { boundedBody, sha256 } from "../../../packages/shared/src/safety";
 import type { Env } from "./index";
 const uuid = z.string().uuid();
 const flowSchema = z.object({
@@ -125,92 +121,6 @@ async function labels(db: SupabaseClient, l: Language) {
   return rows;
 }
 
-type PhotoDecision = "SAFE" | "UNSAFE" | "ERROR";
-
-function base64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  }
-  return btoa(binary);
-}
-
-function aiText(value: unknown): string {
-  if (!value || typeof value !== "object") return "";
-  const record = value as Record<string, unknown>;
-  if (typeof record.response === "string") return record.response;
-  if (typeof record.result === "string") return record.result;
-  const choices = Array.isArray(record.choices) ? record.choices : [];
-  const first = choices[0] as Record<string, unknown> | undefined;
-  const message =
-    first?.message && typeof first.message === "object"
-      ? (first.message as Record<string, unknown>)
-      : undefined;
-  return typeof message?.content === "string" ? message.content : "";
-}
-
-async function workersAiPhotoCheck(
-  env: Env,
-  bytes: Uint8Array,
-): Promise<PhotoDecision> {
-  try {
-    const response = await env.AI.run("@cf/google/gemma-4-26b-a4b-it", {
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a strict profile-photo safety classifier. Reply with exactly SAFE or UNSAFE and nothing else.",
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: "Classify this image. UNSAFE means nudity, exposed genitals or breasts, sexual or strongly racy content, graphic violence, gore, or an image that is unsafe for a general adult relationship profile. If uncertain, choose UNSAFE.",
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:image/jpeg;base64,${base64(bytes)}`,
-              },
-            },
-          ],
-        },
-      ],
-      temperature: 0,
-      max_completion_tokens: 8,
-      chat_template_kwargs: { enable_thinking: false },
-    });
-    const answer = aiText(response).trim().toUpperCase();
-    if (answer.startsWith("SAFE")) return "SAFE";
-    if (answer.startsWith("UNSAFE")) return "UNSAFE";
-    return "ERROR";
-  } catch {
-    return "ERROR";
-  }
-}
-
-async function moderatePhoto(
-  env: Env,
-  bytes: Uint8Array,
-  diagnostic: (code: string) => void,
-): Promise<PhotoDecision> {
-  const edge = await workersAiPhotoCheck(env, bytes);
-  if (edge !== "ERROR") return edge;
-
-  const googleConfig = env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
-  if (!googleConfig) {
-    diagnostic("AI");
-    return "ERROR";
-  }
-
-  const provider = new GoogleSafeSearchProvider(
-    googleConfig,
-    fetch,
-    diagnostic,
-  );
-  return provider.check(bytes);
-}
 function normalizeInstagram(value: string): string {
   let v = value.trim();
   v = v.replace(/^https?:\/\/(?:www\.)?instagram\.com\//i, "");
@@ -313,14 +223,6 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
     );
   };
   try {
-    const configuredLimit = Number(env.PHOTO_MODERATION_MONTHLY_LIMIT);
-    const lim =
-      Number.isInteger(configuredLimit) &&
-      configuredLimit >= 1 &&
-      configuredLimit <= 950
-        ? configuredLimit
-        : 950;
-
     let bytes: Uint8Array | undefined;
     // Telegram returns several sizes. Try the best variants in order so a
     // transient CDN/getFile issue does not make photo upload look broken.
@@ -352,67 +254,28 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
       }
     }
     if (!bytes) throw new Error("TELEGRAM_FILE");
-    if (
-      !(await rpc(db, "reserve_photo_quota", { p_photo: pid, p_limit: lim }))
-    ) {
-      await rpc(db, "photo_finish", {
-        p_user: u.id,
-        p_photo: pid,
-        p_decision: "ERROR",
-      });
-      await write(
-        db.from("photos").update({ failure_stage: "QUOTA" }).eq("id", pid),
-      );
-      await ctx.reply(p(l, "photo_unavailable"));
-      return;
-    }
-    stage = "MODERATION";
-    const decision = await moderatePhoto(env, bytes, diagnostic);
-    const moderationStage = stage;
-    if (decision === "SAFE") {
-      stage = "STORAGE";
-      path = `${u.id}/${pid}.jpg`;
-      const { error } = await db.storage
-        .from("profile-photos")
-        .upload(path, bytes, { contentType: "image/jpeg", upsert: false });
-      if (error) throw new Error("STORAGE");
-    }
+
+    stage = "STORAGE";
+    path = `${u.id}/${pid}.jpg`;
+    const { error } = await db.storage
+      .from("profile-photos")
+      .upload(path, bytes, { contentType: "image/jpeg", upsert: false });
+    if (error) throw new Error("STORAGE");
+
     stage = "DATABASE";
     const approved = await rpc(db, "photo_finish", {
       p_user: u.id,
       p_photo: pid,
-      p_decision: decision,
-      p_path: path ?? null,
+      p_decision: "SAFE",
+      p_path: path,
     });
-    if (!approved && path)
-      await db.storage.from("profile-photos").remove([path]);
-    if (!approved && decision === "ERROR")
-      await write(
-        db
-          .from("photos")
-          .update({ failure_stage: moderationStage })
-          .eq("id", pid),
-      );
-    await ctx.reply(
-      p(
-        l,
-        approved
-          ? "photo_ok"
-          : decision === "UNSAFE"
-            ? "photo_no"
-            : "photo_unavailable",
-      ),
-      {
-        reply_markup: approved
-          ? menu(l)
-          : new InlineKeyboard().text(
-              p(l, "replace"),
-              u.flow.replace ? `replace:${u.flow.replace}` : "m:upload",
-            ),
-      },
+    if (!approved) throw new Error("DATABASE");
+
+    await write(
+      db.from("photos").update({ failure_stage: null }).eq("id", pid),
     );
-    if (approved)
-      await write(db.from("users").update({ flow: {} }).eq("id", u.id));
+    await ctx.reply(p(l, "photo_ok"), { reply_markup: menu(l) });
+    await write(db.from("users").update({ flow: {} }).eq("id", u.id));
   } catch {
     diagnostic(stage);
     if (path) {
