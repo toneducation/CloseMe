@@ -359,6 +359,7 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
     }
     stage = "MODERATION";
     const decision = await moderatePhoto(env, bytes, diagnostic);
+    const moderationStage = stage;
     if (decision === "SAFE") {
       stage = "STORAGE";
       path = `${u.id}/${pid}.jpg`;
@@ -378,7 +379,10 @@ async function upload(ctx: Context, db: SupabaseClient, u: Member, env: Env) {
       await db.storage.from("profile-photos").remove([path]);
     if (!approved && decision === "ERROR")
       await write(
-        db.from("photos").update({ failure_stage: stage }).eq("id", pid),
+        db
+          .from("photos")
+          .update({ failure_stage: moderationStage })
+          .eq("id", pid),
       );
     await ctx.reply(
       p(
