@@ -223,6 +223,15 @@ export async function showMenu(ctx: Context, l: Language) {
   const e = (value: string) => animatedEmoji(emoji, value);
   await replyPremium(ctx, premiumMenuText(l, e), menu(l));
 }
+
+export async function showLanguagePicker(ctx: Context) {
+  const emoji = await premiumEmojiMap(ctx);
+  const e = (value: string) => animatedEmoji(emoji, value);
+  const text = `${e("🌐")} <b>Choose your language</b>
+Tilni tanlang
+Выберите язык`;
+  await replyPremium(ctx, text, languageButtons());
+}
 type InterestLabel = { id: string; label: string };
 const interestCache = new Map<
   Language,
@@ -789,9 +798,7 @@ export async function product(
       return;
     }
     if (action === "language") {
-      await ctx.reply("🌐 Choose your language\nTilni tanlang\nВыберите язык", {
-        reply_markup: languageButtons(),
-      });
+      await showLanguagePicker(ctx);
       return;
     }
     if (action === "filters") {
