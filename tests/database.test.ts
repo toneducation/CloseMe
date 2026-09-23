@@ -203,7 +203,9 @@ describe("real migration and identity RPCs", () => {
     await call("claim_username", [b, "freshrecipient"]);
     const first = await call("begin_transfer", [a, b, "d".repeat(64)]);
     expect(first).toBeTruthy();
-    await q("update username_transfers set state='CANCELLED' where id=$1", [first]);
+    await q("update username_transfers set state='CANCELLED' where id=$1", [
+      first,
+    ]);
 
     const c = await account();
     await call("claim_username", [c, "renamefirst"]);
@@ -934,7 +936,9 @@ describe("Telegram webhook registration regression", () => {
         )[0]?.canonical,
       ).toBe("flowaziz2");
       await bot.send("m:change_username", true);
-      expect(String(bot.replies.at(-1)?.text ?? "").toLowerCase()).toContain("7");
+      expect(
+        String(bot.replies.at(-1)?.text ?? "").toLowerCase(),
+      ).toContain("7");
 
       await bot.send("m:profile", true);
       expect(bot.replies.at(-1)?.text).toContain("@flowaziz2");
