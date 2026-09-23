@@ -1,0 +1,19 @@
+name: Format Preview
+on:
+  push:
+    branches:
+      - fix/username-lifecycle-20260923
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx prettier --write apps/bot/src/product.ts tests/database.test.ts
+      - run: git diff -- apps/bot/src/product.ts tests/database.test.ts
