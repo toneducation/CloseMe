@@ -1,0 +1,30 @@
+name: Autoformat Language Photo Fix
+on:
+  push:
+    branches:
+      - fix/language-speed-photo-20260923
+permissions:
+  contents: write
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/language-speed-photo-20260923
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx prettier --write apps/bot/src/index.ts tests/database.test.ts
+      - name: Commit formatting if needed
+        run: |
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add apps/bot/src/index.ts tests/database.test.ts
+            git commit -m "style: apply Prettier to language and photo fix"
+            git push origin HEAD:fix/language-speed-photo-20260923
+          fi
